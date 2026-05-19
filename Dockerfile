@@ -31,6 +31,7 @@ COPY --from=builder /root/.local /root/.local
 COPY HelpfulBat_app.py .
 COPY content_manager.py .
 COPY content_sources.yaml .
+COPY interaction_logger.py .
 COPY ask.py .
 COPY start_bot.sh .
 COPY demo.sh .

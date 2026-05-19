@@ -1,0 +1,199 @@
+# Evaluation questions for HelpfulBatBot
+#
+# Format:
+#   - question: "..."
+#     reference: "..."   # optional short answer — enables context_precision + context_recall
+#
+# Without 'reference': only faithfulness + answer_relevancy are scored.
+# With 'reference': all four RAGAS metrics are scored.
+# You can mix — questions without references still contribute to the other metrics.
+
+# --- Build / setup ---
+
+- question: "How do I rebuild underworld3 after changing source files?"
+  reference: "Run pixi run build from the repository root. If the build succeeds but Python still uses old code, the pip wheel cache is stale — fix with pip install --no-build-isolation --force-reinstall --no-deps ."
+
+- question: "How do I install underworld3 using pixi?"
+  reference: "Clone the repository, navigate to the root directory, and run pixi install for the minimal environment. For visualisation and JupyterLab use pixi install -e runtime, then build with pixi run build."
+
+# # --- Parallel safety ---
+
+- question: "How do I print output safely in a parallel MPI run?"
+  reference: "Use uw.pprint() instead of Python's built-in print() to ensure output is only printed from rank 0. For output from specific ranks, use uw.selective_ranks()."
+
+- question: "What is uw.selective_ranks() used for?"
+  reference: "uw.selective_ranks() is a context manager that allows a code block to run only on specified MPI ranks. Use it when you need rank-specific operations such as file I/O or printing from non-root ranks, e.g. with uw.selective_ranks(1, 2)"
+
+# --- Solvers ---
+
+- question: "What solver should I use for incompressible Stokes flow?"
+  reference: "Use uw.systems.Stokes(mesh, velocityField=v, pressureField=p) and assign a constitutive model via stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel. The solver uses PETSc SNES internally and requires separate velocity and pressure MeshVariables."
+
+- question: "What happens if I change the core Stokes solver parameters?"
+  reference: "Modifying core PETSc solver parameters (e.g. snes_max_it, ksp_rtol, preconditioner settings) can cause divergence or incorrect solutions. The default settings are tuned for stability — only change them if you understand PETSc and have a specific reason, and always verify convergence with stokes.petsc_options['snes_converged_reason']"
+
+# --- API usage ---
+
+- question: "How do I set a Dirichlet boundary condition in underworld3?"
+  reference: "Use solver.add_dirichlet_bc(value, boundary_label, components) where boundary_label is a string matching the mesh boundary name (e.g. 'Top', 'Bottom') and components is a list of indices specifying which components to constrain, e.g. stokes.add_dirichlet_bc((0.0, 0.0), 'Bottom', (0, 1)) to fix both velocity components to zero on the bottom wall."
+
+- question: "How do I access nodal coordinates in underworld3?"
+  reference: "Use x, y = mesh.X to get symbolic coordinate expressions for use in sympy functions, or mesh.data to get the raw numpy array of nodal coordinates for direct numerical access."
+
+# --- General ---
+
+- question: "Where can I find beginner tutorial notebooks for underworld3?"
+  reference: "Beginner tutorial notebooks are in the docs/beginner/tutorials/ directory. They can also be run online via Binder without any local installation."
+
+- question: "What is CLAUDE.md and what does it contain?"
+  reference: "CLAUDE.md is a file in the repository root containing guidance for AI assistants (like Claude Code) working with the underworld3 codebase. It covers parallel safety rules (use uw.pprint(), never bare print()), build instructions (./uw build), solver stability warnings, and coding conventions."
+
+# --- Mesh ---
+
+- question: "How do I create a 2D box mesh in underworld3?"
+  reference: "Use uw.meshing.StructuredQuadBox(elementRes=(nx, ny), minCoords=(x0, y0), maxCoords=(x1, y1)) for a structured quad mesh, or uw.meshing.UnstructuredSimplexBox(minCoords=(0,0), maxCoords=(1,1), cellSize=0.1) for an unstructured triangular mesh."
+
+- question: "How do I create a 3D box mesh in underworld3?"
+  reference: "Use uw.meshing.StructuredQuadBox(elementRes=(nx, ny, nz), minCoords=(x0, y0, z0), maxCoords=(x1, y1, z1)) for a structured hex mesh, or uw.meshing.UnstructuredSimplexBox(minCoords=(0,0,0), maxCoords=(1,1,1), cellSize=0.1) for an unstructured tetrahedral mesh."
+
+- question: "What is the difference between a simplex and non-simplex mesh in underworld3?"
+  reference: "A simplex mesh uses triangles (2D) or tetrahedra (3D) as elements, created with UnstructuredSimplexBox. A non-simplex mesh uses quadrilaterals (2D) or hexahedra (3D), created with StructuredQuadBox. Simplex meshes are more flexible for complex geometries; quad/hex meshes are more regular and can be more efficient for structured problems."
+
+- question: "How do I set the mesh resolution in underworld3?"
+  reference: "For structured meshes use the elementRes=(nx, ny) parameter, e.g. StructuredQuadBox(elementRes=(32, 32)). For unstructured meshes use cellSize=0.1 where smaller values give finer resolution, e.g. UnstructuredSimplexBox(cellSize=0.05)."
+
+# --- Swarms ---
+
+- question: "What is a swarm in underworld3 and what is it used for?"
+  reference: "A swarm is a collection of Lagrangian particles that move with the flow, created with uw.swarm.Swarm(mesh). It is used to track material properties (e.g. composition, viscosity) through advection, avoiding numerical diffusion that occurs with Eulerian mesh-based fields."
+
+- question: "How do I add a variable to a swarm in underworld3?"
+  reference: "Use uw.swarm.SwarmVariable(name, swarm, size, dtype) e.g. material = uw.swarm.SwarmVariable('M', swarm, 1, dtype=int) for a scalar integer variable. The variable is automatically associated with the swarm and its values can be accessed via .data."
+
+- question: "How do I populate a swarm with particles in underworld3?"
+  reference: "Use swarm.populate(fill_param=N) to fill the mesh with particles, where N controls the number of particles per cell (typically 3–5 for 2D, higher for 3D). Particles are distributed across all MPI ranks automatically."
+
+- question: "How do particles move with the flow in underworld3?"
+  reference: "Use a SemiLagrangian_DDt or Lagrangian_DDt advection scheme attached to the swarm, then call swarm.advection(velocity_field, dt) each timestep to move particles with the velocity field. The swarm handles particle relocation across MPI ranks automatically."
+
+# --- Variables and fields ---
+
+- question: "What is the difference between a MeshVariable and a SwarmVariable in underworld3?"
+  reference: "A MeshVariable is defined on fixed mesh nodes and solved by FEM solvers (e.g. velocity, pressure, temperature). A SwarmVariable is defined on Lagrangian particles that move with the flow and is used to track material properties advected through the domain. Use projections to transfer data between them."
+
+- question: "How do I create a scalar MeshVariable in underworld3?"
+  reference: "Use uw.discretisation.MeshVariable(name, mesh, 1, vtype=uw.VarType.SCALAR, degree=1) where degree=1 is standard for scalar fields like pressure and temperature. Access values via .data and the symbolic form via .sym."
+
+- question: "How do I save a MeshVariable to a file in underworld3?"
+  reference: "Use mesh.petsc_save_checkpoint(index=step, meshVars=[T, v], outputPath='./output') to save mesh variables to HDF5/XDMF format at a given timestep. Alternatively use meshVar.save(filename) to append a variable to an existing mesh HDF5 file."
+
+# --- Solvers (extended) ---
+
+- question: "How do I set up a diffusion solver in underworld3?"
+  reference: "For steady-state diffusion use uw.systems.Poisson(mesh, u_Field=T) with solver.constitutive_model = uw.constitutive_models.DiffusionModel. For transient advection-diffusion use uw.systems.AdvectionDiffusion(mesh, u_Field=T, V_fn=v.sym), then call solver.solve() each timestep."
+
+- question: "How do I add a body force to the Stokes solver?"
+  reference: "Set stokes.bodyforce = sympy.Matrix([body force in x, body force in y]) where the matrix components correspond to force in each spatial direction. For simple gravity use stokes.bodyforce = sympy.Matrix([0, -1]). The expression is evaluated pointwise and can depend on any MeshVariable."
+
+- question: "What is the purpose of the SNES solver in underworld3?"
+  reference: "SNES (Scalable Nonlinear Equations Solver) is the PETSc nonlinear solver that underpins all Underworld3 solvers. It handles both linear problems (as a single Newton step) and nonlinear problems (iterative Newton/Picard iterations). All uw.systems solvers (Stokes, Poisson, AdvectionDiffusion) use SNES internally via PETSc."
+
+# --- Boundary conditions ---
+
+- question: "How do I apply a no-slip boundary condition on the top wall?"
+  reference: "Use stokes.add_dirichlet_bc((0.0, 0.0), 'Top', (0, 1)) to set both velocity components to zero on the top wall, enforcing no-slip. The boundary label 'Top' must match the mesh boundary name, and (0, 1) specifies both x and y components."
+
+- question: "Can I apply boundary conditions on an internal surface in underworld3?"
+  reference: "Yes — label the internal surface during mesh generation (e.g. with pygmsh: geom.add_physical(inclusion.curves, label='inclusion')), then apply BCs using that label normally: stokes.add_dirichlet_bc((0.0, 0.0), 'inclusion', (0, 1)). The mesh must be built with the internal surface as a named physical group."
+
+# --- Parallel / MPI ---
+
+- question: "How do I get the MPI rank and size in underworld3?"
+  reference: "Use uw.mpi.rank and uw.mpi.size to get the current MPI rank and total number of processes."
+
+- question: "What should I avoid doing on non-root MPI ranks in underworld3?"
+  reference: "Avoid file I/O, print statements, and conditional logic based on results that differ across ranks on non-root ranks. Use uw.pprint() instead of print(), wrap file writes in if uw.mpi.rank == 0:, and never use bare if rank != 0: sys.exit() as this causes hangs in collective MPI operations."
+
+# --- Visualisation ---
+
+- question: "How do I visualise results from underworld3?"
+  reference: "Use uw.visualisation.mesh_to_pv_mesh(mesh) to convert the mesh to a PyVista object, then add field data and plot interactively. For parallel-safe matplotlib plots use uw.visualisation.plt_mesh() from uw.visualisation.parallel. Call uw.visualisation.initialise(jupyter_backend='trame') to set up PyVista in Jupyter."
+
+- question: "How do I plot a MeshVariable using pyvista in underworld3?"
+  reference: "Convert the mesh with pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh), then use uw.visualisation.plot_scalar(mesh, T.sym, scalar_name='Temperature', cmap='coolwarm') to plot a scalar MeshVariable. For manual control, use uw.visualisation.scalar_fn_to_pv_points(pvmesh, T.sym) to evaluate the field onto the PyVista mesh and plot with pyvista."
+
+# --- Rheology / constitutive laws ---
+
+- question: "How do I set a spatially varying viscosity in underworld3?"
+  reference: "Assign a sympy expression to stokes.constitutive_model.Parameters.shear_viscosity_0 using mesh coordinates or MeshVariables, e.g. stokes.constitutive_model.Parameters.shear_viscosity_0 = sympy.exp(-b * T.sym[0]) for temperature-dependent viscosity. The expression is evaluated pointwise during the solve."
+
+- question: "How do I implement a non-linear viscosity (e.g. power-law) in underworld3?"
+  reference: "Assign a sympy expression depending on stokes.constitutive_model.Parameters.strainrate_1d (the second invariant of the strain rate) to shear_viscosity_0, e.g. eta = eta_0 * (strainrate_1d + eps) ** ((1-n)/n). The SNES solver iterates until convergence, re-evaluating the viscosity at each step."
+
+- question: "What is the difference between linear and non-linear rheology in the Stokes solver?"
+  reference: "Linear rheology uses a constant or spatially varying viscosity that does not depend on the velocity solution, solved in a single SNES step. Non-linear rheology (e.g. power-law) has viscosity that depends on the strain rate, which itself depends on the velocity — requiring iterative SNES Newton/Picard iterations until convergence."
+
+- question: "How do I set a constant viscosity in underworld3?"
+  reference: "Set stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel then assign a scalar value: stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0."
+
+# --- Time stepping ---
+
+- question: "How do I advance the simulation forward in time in underworld3?"
+  reference: "Call solver.solve() to get the velocity field, estimate a stable timestep with dt = solver.estimate_dt(), then advance tracers with swarm.advection(v.sym, dt) or evolve fields with advDiff.solve(timestep=dt). Repeat in a time loop incrementing time += dt."
+
+- question: "How do I calculate the advection timestep in underworld3?"
+  reference: "Use dt = stokes.estimate_dt() or dt = advDiff.estimate_dt() to get a stable timestep based on the CFL condition — the minimum ratio of element size to local velocity magnitude across all mesh elements and MPI ranks."
+
+- question: "How do I run a time loop in underworld3?"
+  reference: "Use a standard Python for or while loop: solve the velocity field, estimate dt, advect particles or fields, save output at intervals, and increment time += dt. There is no built-in time loop — the user controls the loop logic explicitly."
+
+# --- Projections ---
+
+- question: "What is a projection in underworld3 and when do I need one?"
+  reference: "A projection transfers data between incompatible representations, e.g. from a SwarmVariable onto a MeshVariable using uw.systems.Projection(mesh, meshVar) with projector.uw_function = swarmVar.sym. You need one when a solver requires a MeshVariable but your data lives on a swarm, or when projecting a sympy expression onto a field for output or reuse."
+
+- question: "How do I project a SwarmVariable onto a MeshVariable in underworld3?"
+  reference: "Create a projector with projector = uw.systems.Projection(mesh, meshVar), set projector.uw_function = swarmVar.sym, then call projector.solve(). The result is stored in meshVar.data and can be used in subsequent solves or saved to file."
+
+# --- Initial conditions ---
+
+- question: "How do I set initial conditions for a MeshVariable in underworld3?"
+  reference: "Use with uw.synchronised_array_update(): meshVar.data[...] = uw.function.evaluate(sympy_expr, meshVar.coords) to set initial conditions from a sympy expression. For a constant value, directly assign meshVar.data[...] = 1.0. The synchronised_array_update context manager ensures parallel safety."
+
+- question: "How do I set a spatially varying initial condition using a Python function?"
+  reference: "Define a sympy expression using x, y = mesh.X, e.g. ic = sympy.exp(-((x-0.5)**2 + (y-0.5)**2) / 0.01), then assign with with uw.synchronised_array_update(): T.data[...] = uw.function.evaluate(ic, T.coords). The sympy expression is the recommended approach over raw numpy functions as it works correctly in parallel."
+
+# --- Stokes solver output ---
+
+- question: "How do I access the velocity field after a Stokes solve in underworld3?"
+  reference: "After stokes.solve(), access the velocity field via the MeshVariable passed at construction, e.g. v.data for the numpy array or v.sym for the symbolic form. The velocity components are stored as v.data[:, 0] (x) and v.data[:, 1] (y)."
+
+- question: "How do I access the pressure field after a Stokes solve in underworld3?"
+  reference: "After stokes.solve(), access the pressure field via the MeshVariable passed as pressureField at construction, e.g. p.data for the numpy array or p.sym for the symbolic form. Pressure is a scalar so p.data has shape (n_nodes, 1)."
+
+# --- Debugging / convergence ---
+
+- question: "How do I check if a solver has converged in underworld3?"
+  reference: "Enable convergence reporting with stokes.petsc_options['snes_converged_reason'] = None and stokes.petsc_options['snes_monitor'] = None before calling stokes.solve(). PETSc will print the residual at each iteration and the reason for convergence or divergence to stdout."
+
+- question: "What does a PETSc DIVERGED error mean and how do I fix it?"
+  reference: "A PETSc DIVERGED error means the SNES nonlinear solver failed to converge — common causes are an ill-conditioned problem, bad initial conditions, or overly aggressive solver tolerances. Fixes include: checking boundary conditions are well-posed, reducing the timestep, adding regularisation to nonlinear viscosity (e.g. eps_min), or tightening snes_rtol/snes_atol."
+
+# --- Coordinate systems ---
+
+- question: "Does underworld3 support spherical coordinates?"
+  reference: "Yes — use uw.meshing.SphericalShell(radiusOuter=1.0, radiusInner=0.55) for a 3D spherical shell or uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.55) for a 2D annulus. Solvers work natively on these geometries; coordinates are Cartesian internally but the mesh geometry is spherical."
+
+- question: "How do I work with non-Cartesian mesh coordinates in underworld3?"
+  reference: "Access non-Cartesian coordinates via mesh.CoordinateSystem.R (e.g. r, th = mesh.CoordinateSystem.R for polar/spherical) and unit vectors via mesh.CoordinateSystem.unit_e_0. The mesh stores coordinates internally as Cartesian — mesh.CoordinateSystem provides the symbolic mappings for use in sympy expressions."
+
+# --- Content / indexing ---
+
+- question: "What types of files does HelpfulBatBot index from the underworld3 repository?"
+  reference: "HelpfulBatBot indexes Python files (.py), Jupyter notebooks (.ipynb), and Markdown files (.md) from the underworld3 repository. Notebooks are processed by extracting markdown and code cells. Files can be filtered via BOT_INCLUDE_PATHS and BOT_EXCLUDE_PATHS environment variables."
+
+- question: "What is the BOT_REPO_PATH environment variable used for?"
+  reference: "BOT_REPO_PATH is the path to the underworld3 repository that HelpfulBatBot indexes for its RAG knowledge base."
+
+- question: "How do I force HelpfulBatBot to rebuild its index?"
+  reference: "Set BOT_FORCE_REBUILD=1 before starting the server or running the eval script, e.g. BOT_FORCE_REBUILD=1 python3 eval.py .... The existing ChromaDB index will be cleared and rebuilt from scratch. Unset it afterwards to avoid rebuilding on every run."

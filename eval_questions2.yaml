@@ -1,0 +1,384 @@
+# Evaluation questions for HelpfulBatBot — UW3-specific set
+#
+# Each question has a 'type' field:
+#   rag-specific — implementation internals, exact values, hidden contradictions.
+#                  RAG should reliably outperform plain Claude here.
+#   baseline     — general FEM/PETSc knowledge, guessable from function names,
+#                  or content Claude has likely seen in training data.
+#                  Used to sanity-check that RAG doesn't regress on easy questions.
+#
+# To report metrics by type:
+#   rag-specific questions only → true signal of pipeline quality
+#   baseline questions only     → sanity check / regression guard
+
+# =============================================================================
+# RAG-SPECIFIC — implementation internals, exact values, hidden contradictions
+# =============================================================================
+
+# --- Swarm constraint ordering ---
+
+- question: "Do SwarmVariables need to be created before or after calling swarm.populate()?"
+  reference: "SwarmVariables must be created BEFORE calling swarm.populate(). Once populate() is called, PETSc finalizes field registration via DMSwarmFinalizeFieldRegister() and no new variables can be added — attempting to do so raises a RuntimeError."
+  type: "rag-specific"
+
+# --- Hidden code comment contradictions ---
+
+- question: "What smoothing value does SNES_AdvectionDiffusion apply to the SemiLagrangian_DDt operator by default, and what does the source code recommend?"
+  reference: "Default smoothing=0.0. The code comment in solvers.py states: 'Smoothing is generally required for stability. 0.0001 is effective at the various resolutions tested.' The default contradicts the recommended best practice in the same code section."
+  type: "rag-specific"
+
+# --- Non-obvious parameter internals ---
+
+- question: "What does the order parameter in SemiLagrangian_DDt control and what is its default?"
+  reference: "order controls the number of history timesteps for BDF time integration; default is order=1 (first-order). Setting order=2 enables BDF-2, storing two previous timesteps for second-order accuracy — tutorials typically use order=2."
+  type: "rag-specific"
+
+# --- Non-obvious default behaviour ---
+
+- question: "Does SNES_AdvectionDiffusion use particle-based (Lagrangian) or characteristics-based (semi-Lagrangian) advection by default?"
+  reference: "Semi-Lagrangian by default — it creates a SemiLagrangian_DDt operator when no DuDt is provided. This tracks characteristics along the velocity field rather than discrete particles. To use Lagrangian particle advection instead, pass an explicit Lagrangian_DDt object."
+  type: "rag-specific"
+
+# --- Mesh-specific naming conventions ---
+
+- question: "What are the boundary label names for an Annulus mesh in Underworld3?"
+  reference: "The Annulus mesh uses 'Upper' for the outer boundary (outer radius) and 'Lower' for the inner boundary (inner radius). Example: adv_diff.add_dirichlet_bc(T_outer, 'Upper') and adv_diff.add_dirichlet_bc(T_inner, 'Lower')."
+  type: "rag-specific"
+
+# --- Hardcoded internal values ---
+
+- question: "When you set stokes.tolerance = 1e-6, what PETSc solver parameters are actually configured and with what values?"
+  reference: "Setting stokes.tolerance cascades to four PETSc parameters: snes_rtol=tol, ksp_atol=tol*1e-6, fieldsplit_pressure_ksp_rtol=tol*0.1, fieldsplit_velocity_ksp_rtol=tol*0.033, plus Eisenstat-Walker adaptive tolerance. These multiplier ratios are hardcoded and not visible from the property name."
+  type: "rag-specific"
+
+- question: "What smoothing value is hardcoded into the velocity projector inside the Darcy flow solver, and where is it set?"
+  reference: "The Darcy solver hardcodes self._v_projector.smoothing = 1.0e-6 immediately after creating the projection solver in SNES_Darcy.__init__ (solvers.py). This value is not exposed as a configurable parameter of SNES_Darcy — users cannot change it without accessing the private _v_projector attribute directly."
+  type: "rag-specific"
+
+# =============================================================================
+# BASELINE — general knowledge, guessable from names, or in Claude training data
+# =============================================================================
+
+# --- Swarm usage patterns ---
+
+- question: "Can swarm.populate() be called more than once on the same swarm?"
+  reference: "No — calling populate() on a swarm that already has particles raises RuntimeError: 'Cannot populate swarm that already has X particles.' Use add_particles_per_cell to add particles after initialization instead."
+  type: "baseline"
+
+- question: "What internal SwarmVariables does Underworld3 automatically create on every Swarm, and what are they used for?"
+  reference: "Two internal SwarmVariables are auto-created: _X0 (stores particle start-of-advection position) and _remeshed (integer cycle count for streak tracking when recycle_rate > 1). Both have _proxy=False and are invisible to the user-facing API."
+  type: "rag-specific"
+
+# --- General FEM / guessable from conventions ---
+
+- question: "What is the default polynomial degree for a MeshVariable created without specifying the degree parameter? How does this differ from solver-created variables?"
+  reference: "MeshVariable defaults to degree=1. Stokes and Poisson solvers default to degree=2 for their primary unknowns. This mismatch can cause issues if users manually create a variable expecting it to match a solver's internal field."
+  type: "baseline"
+
+- question: "What preconditioner does the Underworld3 Stokes solver use by default, and what are its key settings?"
+  reference: "The Stokes solver defaults to GAMG with aggregation: pc_type='gamg', pc_gamg_type='agg', pc_gamg_repartition=True, pc_mg_type='additive', pc_gamg_agg_nsmooths=2, mg_levels_ksp_max_it=3, ksp_type='gmres', snes_type='newtonls', snes_rtol=1e-4."
+  type: "baseline"
+
+- question: "What is the default value of p_continuous in the Stokes solver and what does setting it to False do?"
+  reference: "p_continuous defaults to True (continuous P1 pressure elements). Setting it to False switches to discontinuous DG0 pressure, relevant for highly heterogeneous viscosity or physically expected pressure discontinuities."
+  type: "baseline"
+
+- question: "What is the default value of stokes.saddle_preconditioner and what does the property docstring say is recommended?"
+  reference: "Defaults to None; PETSc uses its default mass matrix approximation. The docstring recommends setting it to 1/eta (inverse viscosity) for better preconditioning with heterogeneous viscosity, but this is not applied automatically."
+  type: "baseline"
+
+# --- In Claude training data (CLAUDE.md / public tutorials) ---
+
+- question: "What is the modern way to access mesh vertex coordinates in Underworld3, and what is the deprecated approach?"
+  reference: "Use mesh.X.coords for coordinate data. Both mesh.data and mesh.points are deprecated — they issue deprecation warnings and internally redirect to mesh.X.coords. The CLAUDE.md file explicitly flags this migration: 'mesh.data (coordinates) | Deprecated | mesh.X.coords'."
+  type: "baseline"
+
+- question: "In the thermal convection with units tutorial (Notebook 15), what is the functional form of the initial temperature perturbation?"
+  reference: "init_t = T_outer + deltaT * (1 - r_prime) + 0.1 * deltaT * (sympy.sin(3 * th) * sympy.cos(sympy.pi * r_prime)), where r_prime = (r - inner_radius) / mantle_thickness. The perturbation amplitude is 0.1 times deltaT with mode numbers sin(3*theta)*cos(pi*r')."
+  type: "baseline"
+
+# =============================================================================
+# ADDITIONAL RAG-SPECIFIC — mesh types, debugging, component interactions,
+# MPI gotchas, checkpointing, viscosity model internals
+# =============================================================================
+
+# --- Additional mesh type boundary names ---
+
+- question: "What are the boundary label names for a QuarterAnnulus mesh in Underworld3, and how do they differ from the full Annulus mesh?"
+  reference: "The QuarterAnnulus has four boundary labels: 'Lower' (inner arc, id=1), 'Upper' (outer arc, id=2), 'Left' (left radial edge, id=3), and 'Right' (right radial edge, id=4), plus 'Centre' (id=10) when radiusInner=0. This differs from the full Annulus mesh, which has only 'Lower' and 'Upper' — no Left or Right boundaries, since the full annulus is a closed ring with no radial edges."
+  type: "rag-specific"
+
+- question: "What are the boundary label names for a SphericalShell mesh in Underworld3, and what is the 'Centre' label used for?"
+  reference: "SphericalShell defines three boundary labels: 'Lower' (inner spherical surface at r=r_inner, integer value 11), 'Upper' (outer spherical surface at r=r_outer, integer value 12), and 'Centre' (integer value 1), which labels the centre point and is only present when radiusInner=0 (a complete sphere rather than a shell with a hole at the centre)."
+  type: "rag-specific"
+
+# --- Debugging / error scenarios ---
+
+- question: "In a ViscoPlasticFlowModel, what happens if you forget to set the yield_stress parameter before solving?"
+  reference: "yield_stress defaults to sympy.oo (infinity), so min(η_0, τ_y/(2·ε̇_II)) always returns η_0 — the model behaves identically to ViscousFlowModel with no plastic yielding. No error is raised; it is a silent failure."
+  type: "rag-specific"
+
+- question: "What is strainrate_inv_II_min in ViscoPlasticFlowModel, what is its default, and what problem does it prevent?"
+  reference: "strainrate_inv_II_min sets a floor on ε̇_II in the formula η_eff = min(η_0, τ_y/(2·ε̇_II)); default is 0. When ε̇_II → 0 in static regions, dividing by zero produces overflow or NaN. Setting it to a small positive value (e.g. 1e-18) prevents this."
+  type: "rag-specific"
+
+- question: "What does the _needs_function_rewire flag do in the Underworld3 Stokes solver, and what triggers it?"
+  reference: "_needs_function_rewire is set to True when constitutive model parameters (e.g. viscosity expression) change, triggering a recompilation of the F1 residual and Jacobians on the next solve(). Changing only boundary condition values does not trigger a rewire."
+  type: "rag-specific"
+
+- question: "What are the most common causes of NaN appearing in an Underworld3 Stokes or advection-diffusion solution?"
+  reference: "Common causes: (1) division by zero in viscosity — set strainrate_inv_II_min > 0; (2) timestep too large — reduce delta_t; (3) conflicting or underdetermined boundary conditions; (4) loss of particle coverage during swarm advection causing projection extrapolation."
+  type: "rag-specific"
+
+- question: "What does SNES DIVERGED_ITS mean in an Underworld3 Stokes solve, and what are the recommended approaches to address it?"
+  reference: "SNES DIVERGED_ITS means the nonlinear solver hit its iteration limit. Common fixes: set stokes.saddle_preconditioner = 1/viscosity for large viscosity contrasts (>1e6); loosen stokes.tolerance; or improve initial conditions. Increasing snes_max_it is a last resort, not a fix."
+  type: "rag-specific"
+
+# --- Component interactions ---
+
+- question: "After calling swarm.advection(), do proxy variables (MeshVariables projected from SwarmVariables) need to be explicitly updated?"
+  reference: "Yes — proxy variables are not automatically updated after advection. UW3 tracks staleness via _proxy_stale; you must explicitly call the SwarmVariable's projection method after each advection step, otherwise the next Stokes solve uses stale material properties."
+  type: "rag-specific"
+
+- question: "In an Underworld3 thermal convection loop, what is the correct sequence of operations between a Stokes solve and swarm advection?"
+  reference: "Standard sequence: (1) stokes.solve(), (2) adv_diff.solve(delta_t), (3) swarm.advection(stokes.u.sym, delta_t), (4) update proxy variables before the next Stokes solve. The Stokes solve must precede advection since advection uses the velocity field as input."
+  type: "rag-specific"
+
+# --- MPI gotchas ---
+
+- question: "Which operations in Underworld3 are restricted to rank 0 only, and what happens if all ranks attempt them?"
+  reference: "Rank-0-only operations: Gmsh mesh generation (gated by 'if uw.mpi.rank == 0'), XDMF generation via generateXdmf(), and metadata writes via uw.selective_ranks(0). All ranks attempting Gmsh simultaneously causes race conditions and corrupt mesh files; HDF5 writes are collective."
+  type: "rag-specific"
+
+- question: "In a parallel Underworld3 simulation, what happens to swarm particles that move outside a rank's local domain during advection, and how does this affect field evaluation?"
+  reference: "Particles crossing rank boundaries are automatically migrated during advection. After migration, uw.function.evaluate() only works on locally owned particles; use uw.function.global_evaluate() to evaluate fields at arbitrary (potentially off-process) particle locations."
+  type: "rag-specific"
+
+# --- Checkpointing / output ---
+
+- question: "What is the difference between mesh.write_checkpoint() and mesh.petsc_save_checkpoint() in Underworld3?"
+  reference: "petsc_save_checkpoint() is a legacy wrapper around write_timestep(); write_checkpoint() is the recommended method. write_checkpoint() uses '{filename}.checkpoint.{index:05}.h5' naming, supports a meshUpdates flag to avoid rewriting identical mesh files, and accepts swarmVars."
+  type: "rag-specific"
+
+- question: "How does Underworld3 save SwarmVariable data in a checkpoint, and what limitation does this impose on restarts?"
+  reference: "SwarmVariables are saved via their proxy MeshVariable (_meshVar), not as native particle data. If the proxy is stale after advection, stale data is checkpointed. On restart, the swarm must be repopulated and re-projected from the loaded proxy — individual particle positions are not preserved."
+  type: "rag-specific"
+
+- question: "What does the meshUpdates parameter in mesh.write_checkpoint() control, and when should you set it to False?"
+  reference: "meshUpdates=True (default) saves the mesh as '{filename}.mesh.{index:05}.h5' every checkpoint; meshUpdates=False writes it once as '{filename}.mesh.0.h5' and only saves field data thereafter. Use False for Eulerian simulations where the mesh never deforms."
+  type: "rag-specific"
+
+# --- Viscosity model internals ---
+
+- question: "In Underworld3's ViscousFlowModel, what does the .viscosity alias map to, and what is the default value of the underlying parameter?"
+  reference: "viscosity is an alias for shear_viscosity_0 via the _ViscousParameterAlias mixin — both refer to the same parameter. The default is a symbolic UW3 symbol η=1 (model units), created by a lambda factory to ensure unique naming when multiple material models are used."
+  type: "rag-specific"
+
+- question: "What is the effective viscosity formula used in ViscoPlasticFlowModel, and how does UW3 implement the conditional min() operation symbolically?"
+  reference: "The effective viscosity is η_eff = min(η_0, τ_y / (2·ε̇_II)), where ε̇_II = sqrt(trace(ε̇²)/2) is the second invariant of the strain rate tensor (symmetric part of ∇u). UW3 implements the min using sympy.Min() rather than a Python if/else, producing a smooth symbolic expression that can be differentiated for the Jacobian assembly. If yield_stress is sympy.oo (the default), sympy.Min() always returns η_0, giving purely viscous behaviour with no yield."
+  type: "rag-specific"
+
+# =============================================================================
+# CLASS B — additional general knowledge (PETSc, FEM, numerical methods)
+# =============================================================================
+
+# --- PETSc concepts ---
+
+- question: "What does SNES stand for in PETSc and what is it used for?"
+  reference: "SNES stands for Scalable Nonlinear Equations Solvers. It is PETSc's framework for solving systems of nonlinear equations using Newton-like iteration. SNES manages the outer nonlinear loop, calling a KSP solver for each linear sub-problem at each Newton step. UW3 Stokes and advection-diffusion solvers are built on SNES."
+  type: "baseline"
+
+- question: "What does KSP stand for in PETSc and what types of methods does it cover?"
+  reference: "KSP stands for Krylov SubSpace methods. It is PETSc's framework for solving linear systems using iterative Krylov methods such as GMRES, CG, MINRES, and BiCGStab. KSP is called at each SNES iteration to solve the linearised system. The choice of KSP type and its preconditioner (PC) significantly affects solver performance."
+  type: "baseline"
+
+- question: "What does DIVERGED_ITS mean as a PETSc KSP convergence reason, and how does it differ from SNES DIVERGED_ITS?"
+  reference: "KSP DIVERGED_ITS means the linear solver reached its maximum iteration count without converging to the requested tolerance. Unlike SNES DIVERGED_ITS (nonlinear solver exceeded max iterations), KSP DIVERGED_ITS typically indicates the preconditioner is insufficient — the linear system is not being solved accurately enough per Newton step. Common fixes are improving the preconditioner, switching KSP type, or increasing ksp_max_it as a last resort."
+  type: "baseline"
+
+- question: "What is GAMG in PETSc and why is it effective for the velocity block in Stokes solves?"
+  reference: "GAMG (Geometric Algebraic MultiGrid) is PETSc's algebraic multigrid preconditioner. It constructs a hierarchy of coarser representations automatically from the matrix structure, without requiring explicit geometric information. It is effective for elliptic problems like the momentum equation in Stokes flow because multigrid converges in a mesh-independent number of iterations. UW3 uses GAMG with aggregation (pc_gamg_type=agg) as its default preconditioner for the velocity block."
+  type: "baseline"
+
+- question: "What is a saddle point problem and why does incompressible Stokes flow produce one?"
+  reference: "A saddle point problem is a linear system of the form [A B; B^T 0][u; p] = [f; g], where the system matrix is indefinite (has both positive and negative eigenvalues). Incompressible Stokes flow produces a saddle point system because the incompressibility constraint (div u = 0) acts as a Lagrange multiplier coupling velocity (A block) and pressure (B block), introducing a zero diagonal block. This structure requires specialised preconditioners such as block-diagonal or Schur complement approaches."
+  type: "baseline"
+
+- question: "What is the inf-sup condition (LBB condition) in mixed finite element methods, and why does it matter for Stokes flow?"
+  reference: "The inf-sup (Ladyzhenskaya-Babuška-Brezzi, LBB) condition is a stability requirement for mixed finite element formulations. It states that the discrete pressure and velocity spaces must satisfy inf_q sup_v (div v, q) / (||v|| ||q||) ≥ β > 0 for a mesh-independent constant β. If violated, the discrete pressure develops spurious oscillations. Taylor-Hood elements (P2/P1 — degree-2 velocity, degree-1 pressure) satisfy the inf-sup condition, which is why UW3 defaults to degree=2 for Stokes solver variables."
+  type: "baseline"
+
+- question: "What is a fieldsplit preconditioner in PETSc and how is it applied to Stokes systems?"
+  reference: "A fieldsplit preconditioner (pc_type=fieldsplit) decomposes a block system by field and applies separate sub-preconditioners to each block. For Stokes, it separates velocity and pressure, applying GAMG to the velocity block and a mass matrix approximation (inverse viscosity) to the pressure block. This exploits the saddle point structure. UW3's default Stokes preconditioner uses fieldsplit with an upper triangular factorisation of the blocks."
+  type: "baseline"
+
+# --- FEM concepts ---
+
+- question: "What is the difference between a Dirichlet and a Neumann boundary condition in finite element analysis?"
+  reference: "A Dirichlet (essential) boundary condition specifies the value of the solution on the boundary — e.g., temperature = 300 K or velocity = 0. It is imposed strongly by modifying the system matrix. A Neumann (natural) boundary condition specifies the flux or derivative normal to the boundary — e.g., zero heat flux or prescribed traction. In FEM, Neumann conditions arise naturally from the weak form boundary integral and do not require matrix modification. A homogeneous Neumann BC (zero flux) is the default when no condition is applied to a boundary."
+  type: "baseline"
+
+- question: "What is a Taylor-Hood element and why is it used for Stokes flow?"
+  reference: "A Taylor-Hood element uses degree-2 (quadratic) basis functions for velocity and degree-1 (linear) basis functions for pressure on the same mesh. The polynomial degree difference ensures the inf-sup stability condition is satisfied for incompressible flow, preventing spurious pressure oscillations. It is the standard choice for stable Stokes discretisation. UW3 defaults to degree=2 for Stokes solver variables, consistent with the Taylor-Hood convention."
+  type: "baseline"
+
+- question: "What is the pressure nullspace in incompressible Stokes flow and how is it handled in practice?"
+  reference: "In a closed-domain Stokes problem with no pressure Dirichlet boundary condition, pressure is determined only up to an additive constant — the constant pressure mode is in the nullspace of the operator, making the system singular. The nullspace is removed by either pinning the pressure at one node (a point Dirichlet BC), or by instructing the solver to project out the constant pressure mode. In UW3, setting nullspace=True on the Stokes solver instructs PETSc to handle this automatically."
+  type: "baseline"
+
+# --- Numerical methods ---
+
+- question: "What is the CFL condition and why does it matter for advection problems?"
+  reference: "The Courant-Friedrichs-Lewy (CFL) condition is a necessary stability criterion for explicit time integration of advection equations: CFL = u·Δt/Δx ≤ C_max, where u is velocity, Δt the timestep, Δx the mesh spacing, and C_max a scheme-dependent constant (typically 1 for first-order upwind). Violating the CFL condition causes the numerical solution to blow up. Semi-Lagrangian advection (used in UW3's SemiLagrangian_DDt) is unconditionally stable and not subject to a CFL restriction, which is one of its key advantages over explicit Eulerian advection."
+  type: "baseline"
+
+- question: "What is Newton's method in the context of nonlinear finite element problems?"
+  reference: "Newton's method linearises a nonlinear residual F(u) = 0 by iteratively solving J(u_k) Δu = -F(u_k), where J is the Jacobian (tangent stiffness matrix), then updating u_{k+1} = u_k + Δu. It converges quadratically near the solution but requires forming and factoring the Jacobian at each iteration. In PETSc (SNES), Newton's method with line search (snes_type=newtonls) is the default nonlinear solver. For mildly nonlinear problems like viscous flow, it typically converges in a few iterations."
+  type: "baseline"
+
+- question: "What is GMRES and when is it preferred over Conjugate Gradient (CG) for linear systems?"
+  reference: "GMRES (Generalised Minimal RESidual) is a Krylov iterative method for non-symmetric linear systems. It minimises the residual over the Krylov subspace at each step. CG requires the matrix to be symmetric positive definite; Stokes systems are neither, due to their saddle point structure. GMRES handles non-symmetric and indefinite systems, making it appropriate for Stokes solves. UW3 defaults to GMRES (ksp_type=gmres) for Stokes solves."
+  type: "baseline"
+
+- question: "What is Rayleigh-Bénard convection and what dimensionless number governs it?"
+  reference: "Rayleigh-Bénard convection is thermally driven flow in a fluid layer heated from below and cooled from above. The governing dimensionless parameter is the Rayleigh number Ra = ρgαΔTd³/(ηκ), where ρ is density, g gravity, α thermal expansivity, ΔT the temperature difference, d layer depth, η viscosity, and κ thermal diffusivity. Convection onset occurs at Ra ≈ 1708 for a flat layer with rigid boundaries. It is a standard benchmark for coupled Stokes and advection-diffusion solvers in geodynamics and is demonstrated in UW3's Tutorial 15."
+  type: "baseline"
+
+- question: "What is the difference between Lagrangian and Eulerian descriptions of fluid flow in numerical geodynamics?"
+  reference: "In a Lagrangian description, the computational grid or particles move with the fluid — each node tracks the same material point through time, naturally capturing material interfaces and history-dependent properties but requiring remeshing when the grid distorts. In an Eulerian description, the grid is fixed in space and fluid flows through it. UW3 uses a mixed approach: an Eulerian fixed mesh for the velocity-pressure Stokes solve, and Lagrangian particle swarms to track material properties and history variables such as accumulated strain or stress."
+  type: "baseline"
+
+# =============================================================================
+# CLASS A — additional UW3-specific (BC syntax, build, SymPy, migrations, tutorials)
+# =============================================================================
+
+# --- Boundary condition syntax ---
+
+- question: "In Underworld3, how do you apply a free-slip boundary condition on a vertical wall using add_dirichlet_bc, and what does None mean in the conditions list?"
+  reference: "For a free-slip condition on a vertical wall (fix normal velocity, leave tangential free), pass None for the unconstrained component: stokes.add_dirichlet_bc([0.0, None], 'Left') constrains the x-component to zero and leaves the y-component free. None in the conds list tells UW3 to leave that vector component unconstrained. The boundary label must match exactly (case-sensitive). sympy.oo has the same effect as None. This syntax replaced the deprecated components= keyword parameter."
+  type: "rag-specific"
+
+- question: "What is add_natural_bc in Underworld3 and how does it differ from add_dirichlet_bc?"
+  reference: "add_natural_bc applies a natural (Neumann-type) boundary condition, specifying a flux or traction rather than a solution value. For Stokes, this prescribes a surface traction; for advection-diffusion, a heat flux. add_dirichlet_bc (also aliased as add_essential_bc) constrains the solution value directly. A homogeneous Neumann BC (zero flux/traction) is the default when no condition is specified on a boundary, so add_natural_bc(0.0, boundary) is redundant but explicit. Natural BCs are incorporated into the weak form boundary integral, not by modifying the system matrix."
+  type: "rag-specific"
+
+# --- Build and workflow ---
+
+- question: "What command must be run after modifying Underworld3 Cython source files, and what happens if you skip it?"
+  reference: "You must run './uw build' (or equivalently 'pixi run build', which internally runs 'pip install . --no-build-isolation') after any source code changes. UW3 uses Cython for its core components which must be compiled before changes take effect — the installed package in site-packages will otherwise reflect stale code. Editable installs (pip install -e .) are explicitly not supported and break worktree isolation. Skipping the build means your Python session silently uses old compiled code with no error or warning."
+  type: "rag-specific"
+
+- question: "What are the pixi test commands in Underworld3 and how do they differ in scope?"
+  reference: "'pixi run test' runs the quick level-1 test suite, taking approximately 2 minutes and covering basic functionality. 'pixi run test-all' runs the full test suite. The level distinction matters when iterating on changes — level-1 tests provide fast feedback while the full suite is needed before merging. Tests validate solver correctness and are part of the CI/CD pipeline."
+  type: "rag-specific"
+
+# --- SymPy and coordinate system ---
+
+- question: "How do you access symbolic mesh coordinates in Underworld3 for use in SymPy expressions, and what does mesh.X return?"
+  reference: "mesh.X is the CoordinateSystem object and the canonical way to access symbolic coordinate functions. 'x, y = mesh.X' unpacks symbolic BaseScalars for a 2D mesh (x, y, z for 3D), which can be used directly in SymPy expressions — e.g., eta = 1e21 * sympy.exp(-y) defines a depth-dependent viscosity. mesh.X.coords returns the numerical coordinate array (shape N × dim). mesh.CoordinateSystem is an alias for mesh.X. The deprecated mesh.data was the old way to access numerical coordinates."
+  type: "rag-specific"
+
+- question: "What does swarm_var.sym return in Underworld3 and how is it used in solver expressions?"
+  reference: "swarm_var.sym returns the symbolic representation of the SwarmVariable's proxy MeshVariable — a SymPy expression usable anywhere a mesh-based field expression is expected. It is the standard way to pass particle-tracked material properties into a solver: stokes.constitutive_model.Parameters.shear_viscosity_0 = swarm_var.sym. When the solver evaluates this expression at quadrature points, it reads from the projected proxy MeshVariable. swarm_var.sym is only as current as the last proxy update — if the proxy is stale after advection, the solver uses outdated values."
+  type: "rag-specific"
+
+# --- Deprecated API ---
+
+- question: "What is the correct replacement for the deprecated 'with mesh.access(var):' context manager pattern in Underworld3?"
+  reference: "The 'with mesh.access(var):' and 'with swarm.access(var):' context managers are deprecated. The replacement is direct array access: 'var.data[...]' for reading and writing MeshVariable or SwarmVariable values. For example, 'with mesh.access(T): T.data[:] = 300' is replaced by 'T.data[:] = 300' directly. The context manager was a legacy pattern from Underworld2 that enforced access control; UW3 no longer requires it."
+  type: "rag-specific"
+
+# --- Tutorial content ---
+
+- question: "Which Underworld3 beginner tutorial covers multi-material models using IndexSwarmVariable, and what is the benchmark problem used?"
+  reference: "Tutorial 11 (11-Multi-Material_SolCx.ipynb) covers multi-material models using IndexSwarmVariable. The benchmark is SolCx — a manufactured solution for Stokes flow with a sharp viscosity discontinuity at x=0.5. IndexSwarmVariable assigns an integer material index to each particle, used to select material properties per particle via conditional SymPy expressions. SolCx has an analytic solution, making it suitable for convergence testing."
+  type: "rag-specific"
+
+# --- Projection ---
+
+- question: "What interpolation method does Underworld3 use to project SwarmVariable data to its proxy MeshVariable, and what controls the number of particles used?"
+  reference: "Underworld3 uses RBF (Radial Basis Function) interpolation via inverse-distance weighting to project SwarmVariable data onto the proxy MeshVariable. The number of nearest-neighbor particles used is controlled by the nnn parameter (default: mesh.dim + 1, i.e., 3 for 2D and 4 for 3D). The projection is performed via rbf_interpolate() or internally via _rbf_to_meshVar(). Too few particles (low nnn) produces noisy projections; too many increases cost and can over-smooth sharp material interfaces."
+  type: "rag-specific"
+
+# --- Checkpoint ---
+
+- question: "In Underworld3, does write_checkpoint() call var._sync_lvec_to_gvec() automatically, or must the user call it manually before checkpointing?"
+  reference: "write_checkpoint() calls var._sync_lvec_to_gvec() internally for each MeshVariable before writing to HDF5 — the user does not need to call it manually. This sync copies the rank-local vector to the global parallel-consistent vector required for collective HDF5 output. However, the user is responsible for ensuring the proxy MeshVariable has been updated (via SwarmVariable projection) before checkpointing, since write_checkpoint() saves the proxy data as-is without triggering a re-projection."
+  type: "rag-specific"
+
+# --- Swarm advection parameters ---
+
+- question: "What does the corrector parameter in swarm.advection() do, and what is its default?"
+  reference: "corrector defaults to False. When set to True, swarm.advection() uses a predictor-corrector scheme: it first takes a full Euler step (predictor) to estimate the new particle position, then averages the velocity at the original and predicted positions to compute a corrected displacement (corrector step). This improves accuracy from first-order to second-order in time for the particle trajectories, at the cost of two velocity evaluations per substep instead of one. The order=2 default (midpoint algorithm) already provides second-order accuracy without the corrector; corrector=True is an alternative second-order approach."
+  type: "rag-specific"
+
+- question: "What is the restore_points_to_domain_func parameter in swarm.advection(), and when would you use it?"
+  reference: "restore_points_to_domain_func is an optional callback function that is called after each advection substep to reposition particles that have moved outside the mesh domain. It receives particle coordinates and should return corrected coordinates for any out-of-bounds particles. This is used for geometries with periodic or reflecting boundaries, or to enforce domain constraints such as keeping particles on a spherical shell surface after advection distorts their radial position. Without this callback, particles that exit the domain are lost or cause errors during the next field evaluation."
+  type: "rag-specific"
+
+# --- Additional Class B ---
+
+- question: "What is the Boussinesq approximation in geodynamic modelling and what does it simplify?"
+  reference: "The Boussinesq approximation assumes density variations are small enough that they can be neglected everywhere except in the buoyancy term of the momentum equation. This means the continuity equation reduces to div u = 0 (incompressible), eliminating acoustic waves and allowing a much larger timestep. Density appears only as ρ = ρ_0(1 - αT) in the buoyancy body force. The approximation is valid when density variations are much smaller than the reference density — appropriate for most mantle convection problems but not for compressible flow or very large pressure ranges."
+  type: "baseline"
+
+- question: "What is a preconditioner in the context of iterative linear solvers, and why is it needed?"
+  reference: "A preconditioner is an operator P that transforms the linear system Ax = b into a better-conditioned equivalent (P^{-1}A)x = P^{-1}b, which iterative solvers can solve in fewer iterations. Without preconditioning, iterative Krylov methods converge slowly or not at all for ill-conditioned systems — the number of iterations grows with the condition number of A. A good preconditioner approximates A^{-1} cheaply. For Stokes systems in UW3, the default preconditioner combines GAMG for the velocity block and an inverse viscosity approximation for the pressure block, exploiting the block saddle point structure."
+  type: "baseline"
+
+# =============================================================================
+# CLASS A — units, multi-material, spherical geometry, advdiff, visualisation,
+#           viscoelasticplastic
+# =============================================================================
+
+# --- Units and non-dimensionalisation ---
+
+- question: "How do you create a physical quantity with units in Underworld3, and what module provides unit definitions?"
+  reference: "Use `uw.units` (a Pint-based registry): e.g. `1500 * uw.units.K` for temperature or `1e21 * uw.units.Pa * uw.units.s` for viscosity. Geoscience shortcuts include `uw.units.Ma` (million years) and `uw.units.cm / uw.units.year` for plate velocities."
+  type: "rag-specific"
+
+- question: "What functions does Underworld3 provide to convert between dimensional and non-dimensional quantities, and what must be set up first?"
+  reference: "Call `set_reference_quantities()` to define reference scales, then use `uw.non_dimensionalise(quantity)` to obtain a dimensionless float and `uw.dimensionalise(value, units)` to convert back. Without reference quantities defined first, non-dimensionalisation will raise an error."
+  type: "rag-specific"
+
+# --- Multi-material / IndexSwarmVariable ---
+
+- question: "What is IndexSwarmVariable in Underworld3 and how does it combine material properties from multiple materials?"
+  reference: "IndexSwarmVariable assigns an integer material index (0, 1, 2, ...) to each particle and generates level-set functions φ_i(x) from particle positions. The composite constitutive flux is Σ φ_i(x) · f_i(x) — a weighted average over materials present in each element, with each material having its own constitutive model."
+  type: "rag-specific"
+
+- question: "In Tutorial 11 (Multi-Material SolCx), what viscosity ratio is used and where is the material boundary?"
+  reference: "Material 0 has viscosity η=1, material 1 has viscosity η=10^6 — a ratio of 10^6. The material boundary sits at x=0.5. Free-slip BCs are applied on all boundaries and the body force is f_y = -cos(πx)sin(2πy)."
+  type: "rag-specific"
+
+# --- Spherical geometry operations ---
+
+- question: "How do you access the radial unit vector in a SphericalShell mesh in Underworld3, and what is it used for?"
+  reference: "The radial unit vector is `mesh.CoordinateSystem.unit_e_0` (alias: `mesh.X.unit_e_0`), pointing outward from the centre. It is used to express radial velocity boundary conditions — e.g., dotting velocity with unit_e_0 constrains only the radial component while leaving tangential components free."
+  type: "rag-specific"
+
+- question: "Why does a SphericalShell Stokes solve require nullspace rotation handling, and what rotations does UW3 define?"
+  reference: "A closed incompressible spherical shell has three rigid-body rotation modes in the velocity nullspace, making the system singular. UW3 defines `_nullspace_rotations` as three sympy.Matrix vectors `[0,-z,y]`, `[z,0,-x]`, `[-y,x,0]` (rotations about x, y, z axes) which the Stokes solver projects out to obtain a unique solution."
+  type: "rag-specific"
+
+# --- Advection-diffusion solver ---
+
+- question: "What does the theta parameter in Underworld3's SNES_AdvectionDiffusion solver control and what is its default?"
+  reference: "theta controls time integration implicitness: 0 = explicit (forward Euler), 0.5 = Crank-Nicolson (default), 1 = fully implicit (backward Euler). The default theta=0.5 gives second-order time accuracy; theta=1.0 is unconditionally stable but first-order."
+  type: "rag-specific"
+
+# --- ParaView / visualisation output ---
+
+- question: "What is the difference between write_timestep() and write_checkpoint() for visualisation in Underworld3?"
+  reference: "write_timestep() projects field data to mesh vertices and generates XDMF files readable directly by ParaView; write_checkpoint() stores data at native polynomial degree for model restart, not vertex-centred. write_timestep() also calls _repack_tensor_to_paraview() to convert tensor fields to the Voigt notation ParaView expects."
+  type: "rag-specific"
+
+# --- ViscoElasticPlastic history variables ---
+
+- question: "What parameter does ViscoElasticPlasticFlowModel require that ViscousFlowModel and ViscoPlasticFlowModel do not, and what happens if it is set to sympy.oo?"
+  reference: "ViscoElasticPlasticFlowModel requires `shear_modulus` (G). Setting shear_modulus=sympy.oo removes elastic memory entirely, reducing the model to purely viscoplastic behaviour. The Maxwell relaxation time is t_relax = shear_viscosity_0 / shear_modulus."
+  type: "rag-specific"
+
+- question: "What do the BDF coefficients _bdf_c0 through _bdf_c3 in ViscoElasticPlasticFlowModel represent and what are their BDF-1 defaults?"
+  reference: "These coefficients control temporal discretisation of the elastic stress update via Backward Differentiation Formula integration. BDF-1 defaults are _bdf_c0=1, _bdf_c1=-1, _bdf_c2=0, _bdf_c3=0. They are updated each timestep by the solver when using variable-timestep BDF-2."
+  type: "rag-specific"

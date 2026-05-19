@@ -103,7 +103,7 @@ def show_status():
             print(f"Claude model: {data['claude_model']}")
         else:
             print("❌ Bot returned error")
-    except:
+    except Exception:
         print("❌ Bot not responding. Is it running?")
         print("   Start it with: python3 HelpfulBat_app.py")
 

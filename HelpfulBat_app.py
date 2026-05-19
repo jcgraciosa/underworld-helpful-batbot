@@ -1,7 +1,8 @@
-# filename: app.py
+# filename: HelpfulBat_app.py
 import os
 import json
 import uvicorn
+from contextlib import asynccontextmanager
 from typing import List, Optional, Tuple
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -12,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Embeddings & retrieval
-import faiss
+import chromadb
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import anthropic  # Claude API
@@ -28,16 +29,29 @@ interaction_logger = get_logger("interactions")
 # ANTHROPIC_API_KEY: your Anthropic API key for Claude
 # BOT_MAX_FILE_SIZE: optional, default 200_000 chars
 # BOT_ALLOWED_EXTS: optional, comma-separated (default typical code/doc exts)
-# CLAUDE_MODEL: optional, default claude-3-5-sonnet-20241022
+# CLAUDE_MODEL: optional, default claude-sonnet-4-6
+# BOT_HYBRID_SEARCH: set to 1 to enable BM25 + vector RRF hybrid retrieval (default: off)
+#   Eval result: improves context_precision for Class B (general) questions but hurts
+#   Class A (rag-specific) context_recall (-0.131) and answer_relevancy (-0.142).
+#   Recommended off for domain-specific use. May improve with domain fine-tuning.
+# BOT_HYDE: HyDE retrieval — generates a short hypothetical answer and embeds that instead
+#   of the raw question (default: on). Costs one extra Claude call per query (~200ms).
+#   Eval result: Class A context_recall +0.071, faithfulness +0.036, answer_relevancy +0.025.
+#   Set BOT_HYDE=0 to disable.
+# BOT_AST_CHUNKING: use AST-based chunking for .py files at function/class boundaries (default: on).
+#   Eval result vs line-based: hurts Class A context_recall (-0.083), helps Class B (+0.073).
+#   Set BOT_AST_CHUNKING=0 to disable (uses line-based chunking for all files).
 
-MODEL_NAME = "all-MiniLM-L6-v2"
-EMBEDDING_DIM = 384
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
+MODEL_NAME = os.environ.get("BOT_EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+USE_HYBRID_SEARCH = os.environ.get("BOT_HYBRID_SEARCH", "").lower() in ("1", "true")
+USE_HYDE = os.environ.get("BOT_HYDE", "1").lower() in ("1", "true")
+USE_AST_CHUNKING = os.environ.get("BOT_AST_CHUNKING", "1").lower() in ("1", "true")
 
 
 class Query(BaseModel):
     question: str
-    max_context_items: int = 6
+    max_context_items: int = 10
 
 
 class IndexedDoc(BaseModel):
@@ -55,12 +69,13 @@ class BotResponse(BaseModel):
     confidence: float
 
 
-app = FastAPI(title="GitHub Repo Support Bot")
-
 index_built = False
-faiss_index = None
-doc_store: List[IndexedDoc] = []
+chroma_client = None
+chroma_collection = None
 embedder: Optional[SentenceTransformer] = None
+_reranker = None  # Lazy-loaded CrossEncoder, cached after first use
+_bm25_index = None  # BM25Okapi index, built at index time
+_bm25_doc_ids: List[str] = []  # ChromaDB doc IDs in BM25 corpus order
 
 
 def allowed_exts() -> set:
@@ -114,11 +129,13 @@ def should_include_file(rel_path: str) -> bool:
         "README.md",
         "CLAUDE.md",
         "docs/*.md",
+        "src/underworld3/**/*.py",  # UW3 source: function signatures, docstrings, API
     ]
 
     # Default: exclude internal implementation details
     default_excludes = [
-        "src/**/*",                # Source code internals
+        "src/petsc/**/*",          # PETSc internals (not user-facing)
+        "src/cmake/**/*",          # Build system files
         "docs/developer/**/*",     # Developer docs
         "docs/planning/**/*",      # Planning documents in docs
         "planning/**/*",           # Planning documents
@@ -256,11 +273,68 @@ def load_files(repo_path: str) -> List[Tuple[str, str]]:
     return files
 
 
-def chunk_text(path: str, text: str, max_chars: int = 2000, overlap: int = 200) -> List[IndexedDoc]:
+def chunk_python_ast(path: str, text: str, max_chars: int = 2000, base_id: int = 0) -> List[IndexedDoc]:
+    """
+    Chunk a Python source file at top-level function/class boundaries using AST.
+
+    Each top-level function or class becomes its own chunk, preserving signatures
+    and docstrings. Nodes larger than max_chars fall back to line-based chunking.
+    Falls back entirely to chunk_text() if the file cannot be parsed.
+    """
+    import ast
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return chunk_text(path, text, max_chars=max_chars, base_id=base_id)
+
+    lines = text.splitlines()
+    nodes = sorted(
+        [n for n in ast.iter_child_nodes(tree)
+         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))],
+        key=lambda n: n.lineno,
+    )
+
+    if not nodes:
+        return chunk_text(path, text, max_chars=max_chars, base_id=base_id)
+
+    chunks = []
+
+    # Module header: imports, module docstring, module-level statements
+    first_line = nodes[0].lineno
+    if first_line > 1:
+        header = "\n".join(lines[:first_line - 1])
+        if header.strip():
+            chunks.append(IndexedDoc(
+                doc_id=base_id + len(chunks),
+                path=path, start_line=1, end_line=first_line - 1, text=header,
+            ))
+
+    # One chunk per top-level function/class
+    for node in nodes:
+        start, end = node.lineno, node.end_lineno
+        node_text = "\n".join(lines[start - 1:end])
+        if len(node_text) <= max_chars:
+            chunks.append(IndexedDoc(
+                doc_id=base_id + len(chunks),
+                path=path, start_line=start, end_line=end, text=node_text,
+            ))
+        else:
+            # Too large — fall back to line-based chunking for this node only
+            sub = chunk_text(path, node_text, max_chars=max_chars, base_id=base_id + len(chunks))
+            for ch in sub:
+                ch.start_line += start - 1
+                ch.end_line += start - 1
+            chunks.extend(sub)
+
+    return chunks
+
+
+def chunk_text(path: str, text: str, max_chars: int = 2000, overlap: int = 200, base_id: int = 0) -> List[IndexedDoc]:
+    # Both max_chars and overlap are in characters for consistency.
+    # Step size is approximately max_chars - overlap (~1800 chars by default).
     lines = text.splitlines()
     chunks = []
     start = 0
-    base_id = len(doc_store)
     while start < len(lines):
         acc = []
         acc_len = 0
@@ -269,6 +343,12 @@ def chunk_text(path: str, text: str, max_chars: int = 2000, overlap: int = 200) 
             acc.append(lines[i])
             acc_len += len(lines[i]) + 1
             i += 1
+
+        # Single line exceeds max_chars — include it to avoid infinite loop
+        if not acc:
+            acc.append(lines[i])
+            i += 1
+
         chunk = "\n".join(acc)
         chunks.append(
             IndexedDoc(
@@ -279,42 +359,273 @@ def chunk_text(path: str, text: str, max_chars: int = 2000, overlap: int = 200) 
                 text=chunk,
             )
         )
-        start = max(i - overlap, start + 1)
-        if start >= i:
-            start = i
+
+        # Next chunk starts where the last ~overlap characters of this chunk begin
+        overlap_len = 0
+        next_start = i
+        for j in range(i - 1, start, -1):
+            overlap_len += len(lines[j]) + 1
+            if overlap_len >= overlap:
+                next_start = j
+                break
+
+        # Always advance by at least one line to guarantee termination
+        start = max(next_start, start + 1)
     return chunks
 
 
+def _build_bm25(texts: List[str], doc_ids: List[str]) -> None:
+    global _bm25_index, _bm25_doc_ids
+    from rank_bm25 import BM25Okapi
+    tokenized = [t.lower().split() for t in texts]
+    _bm25_index = BM25Okapi(tokenized)
+    _bm25_doc_ids = doc_ids
+
+
 def ensure_index():
-    global index_built, faiss_index, doc_store, embedder
+    global index_built, chroma_client, chroma_collection, embedder
     if index_built:
         return
+
+    print(f"Embedding model: {MODEL_NAME} (set BOT_EMBEDDING_MODEL to override)")
+    print(f"Hybrid BM25+vector search: {'ON' if USE_HYBRID_SEARCH else 'OFF'} (set BOT_HYBRID_SEARCH=1 to enable)")
+    print(f"HyDE retrieval: {'ON' if USE_HYDE else 'OFF'} (set BOT_HYDE=0 to disable)")
+    print(f"AST chunking (.py): {'ON' if USE_AST_CHUNKING else 'OFF'} (set BOT_AST_CHUNKING=0 to disable)")
+
     repo_path = os.environ.get("BOT_REPO_PATH")
     if not repo_path:
         raise RuntimeError("BOT_REPO_PATH not set")
+
+    cache_dir = os.environ.get("BOT_INDEX_CACHE", "./index_cache")
+    chroma_client = chromadb.PersistentClient(path=cache_dir)
+    chroma_collection = chroma_client.get_or_create_collection(
+        name="docs",
+        metadata={"hnsw:space": "cosine"},
+    )
+
+    force_rebuild = os.environ.get("BOT_FORCE_REBUILD", "").lower() in ("1", "true")
+
+    if chroma_collection.count() > 0 and not force_rebuild:
+        embedder = SentenceTransformer(MODEL_NAME)
+        all_data = chroma_collection.get(include=["documents"])
+        _build_bm25(all_data["documents"], all_data["ids"])
+        index_built = True
+        print(f"Loaded existing index from ChromaDB ({chroma_collection.count()} chunks)")
+        return
+
+    if force_rebuild and chroma_collection.count() > 0:
+        chroma_client.delete_collection("docs")
+        chroma_collection = chroma_client.get_or_create_collection(
+            name="docs", metadata={"hnsw:space": "cosine"}
+        )
+        print("Force rebuild: cleared existing index")
+
     files = load_files(repo_path)
     embedder = SentenceTransformer(MODEL_NAME)
-    embeddings = []
+
     docs = []
     for path, content in files:
-        for ch in chunk_text(path, content):
-            docs.append(ch)
-            emb = embedder.encode(ch.text, normalize_embeddings=True).astype(np.float32)
-            embeddings.append(emb)
-    if not embeddings:
+        base_id = len(docs)
+        if path.endswith(".py") and USE_AST_CHUNKING:
+            for ch in chunk_python_ast(path, content, base_id=base_id):
+                docs.append(ch)
+        else:
+            for ch in chunk_text(path, content, base_id=base_id):
+                docs.append(ch)
+
+    if not docs:
         raise RuntimeError("No documents indexed")
-    mat = np.vstack(embeddings)
-    faiss_index = faiss.IndexFlatIP(EMBEDDING_DIM)  # cosine via normalized embeddings
-    faiss_index.add(mat)
-    doc_store = docs
+
+    print(f"Encoding {len(docs)} chunks...")
+    embeddings = embedder.encode(
+        [ch.text for ch in docs],
+        normalize_embeddings=True,
+        batch_size=64,
+        show_progress_bar=True,
+    ).astype(np.float32).tolist()
+
+    # Deduplicate near-identical chunks (e.g. same boilerplate repeated across notebook variants)
+    dedup_threshold = float(os.environ.get("BOT_DEDUP_THRESHOLD", "0.95"))
+    emb_array = np.array(embeddings)
+    kept_indices = []
+    kept_embs = []
+    for i, emb in enumerate(emb_array):
+        if kept_embs:
+            sims = np.array(kept_embs) @ emb  # cosine sim (embeddings are normalised)
+            if np.max(sims) >= dedup_threshold:
+                continue
+        kept_indices.append(i)
+        kept_embs.append(emb)
+    n_removed = len(docs) - len(kept_indices)
+    docs = [docs[i] for i in kept_indices]
+    embeddings = [embeddings[i] for i in kept_indices]
+    print(f"Deduplication: removed {n_removed} near-duplicate chunks (threshold={dedup_threshold}), {len(docs)} remaining")
+
+    BATCH = 500
+    for i in range(0, len(docs), BATCH):
+        batch = docs[i:i + BATCH]
+        chroma_collection.add(
+            ids=[str(ch.doc_id) for ch in batch],
+            embeddings=embeddings[i:i + BATCH],
+            documents=[ch.text for ch in batch],
+            metadatas=[{
+                "path": ch.path,
+                "start_line": ch.start_line,
+                "end_line": ch.end_line,
+            } for ch in batch],
+        )
+
+    _build_bm25([ch.text for ch in docs], [str(ch.doc_id) for ch in docs])
     index_built = True
+    print(f"Indexed {len(docs)} chunks into ChromaDB")
 
 
-def retrieve(question: str, k: int) -> List[IndexedDoc]:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🔧 Building index at startup...")
     ensure_index()
-    q_emb = embedder.encode(question, normalize_embeddings=True).astype(np.float32)
-    D, I = faiss_index.search(q_emb.reshape(1, -1), k)
-    return [doc_store[idx] for idx in I[0] if idx != -1]
+    print("Index ready. Accepting requests.")
+    yield
+
+
+app = FastAPI(title="GitHub Repo Support Bot", lifespan=lifespan)
+
+
+def generate_hypothesis(question: str) -> str:
+    """
+    Generate a short hypothetical answer for HyDE retrieval.
+
+    Embeds the hypothesis instead of the raw question — the hypothesis looks like
+    a documentation chunk, aligning better with the embedding space.
+    Returns the original question as fallback if the API call fails.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return question
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=150,
+            temperature=0.0,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Write a 2-3 sentence technical answer to this question about Underworld3 "
+                    f"as if it came from the source code or documentation. "
+                    f"Be specific and use technical terminology.\n\nQuestion: {question}"
+                ),
+            }],
+        )
+        return message.content[0].text
+    except Exception:
+        return question
+
+
+def retrieve(question: str, k: int, use_reranker: bool = False, n_candidates: int = 20, use_hybrid: bool = False, use_hyde: bool = False) -> List[IndexedDoc]:
+    """
+    Retrieve top-k relevant documents for a question.
+
+    Args:
+        question: The user's question.
+        k: Number of documents to return.
+        use_reranker: If True, fetch n_candidates from ChromaDB then rerank to top k
+                      using cross-encoder/ms-marco-MiniLM-L-6-v2.
+        n_candidates: Number of candidates to fetch before reranking (only used when use_reranker=True).
+        use_hybrid: If True, combine vector search with BM25 using Reciprocal Rank Fusion (RRF).
+        use_hyde: If True, embed a generated hypothetical answer instead of the raw question.
+    """
+    ensure_index()
+    fetch_n = max(n_candidates, k) if use_reranker else k
+
+    # Vector search — embed hypothesis if HyDE enabled, otherwise embed raw question
+    query_text = generate_hypothesis(question) if use_hyde else question
+    q_emb = embedder.encode(query_text, normalize_embeddings=True).astype(np.float32).tolist()
+    results = chroma_collection.query(
+        query_embeddings=[q_emb],
+        n_results=fetch_n,
+        include=["documents", "metadatas", "embeddings"],
+    )
+    vector_ids = results["ids"][0]
+    docs_by_id = {}
+    embs_by_id = {}
+    for i, doc_id in enumerate(vector_ids):
+        meta = results["metadatas"][0][i]
+        text = results["documents"][0][i]
+        docs_by_id[doc_id] = IndexedDoc(
+            doc_id=int(doc_id),
+            path=meta["path"],
+            start_line=meta["start_line"],
+            end_line=meta["end_line"],
+            text=text,
+        )
+        embs_by_id[doc_id] = results["embeddings"][0][i]
+
+    if use_hybrid and _bm25_index is not None:
+        # BM25 search
+        bm25_scores = _bm25_index.get_scores(question.lower().split())
+        bm25_top_indices = np.argsort(bm25_scores)[::-1][:fetch_n]
+        bm25_ids = [_bm25_doc_ids[i] for i in bm25_top_indices]
+
+        # RRF merge (k=60 standard constant)
+        rrf_k = 60
+        rrf_scores: dict = {}
+        for rank, doc_id in enumerate(vector_ids):
+            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + 1 / (rrf_k + rank + 1)
+        for rank, doc_id in enumerate(bm25_ids):
+            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + 1 / (rrf_k + rank + 1)
+
+        merged_ids = sorted(rrf_scores, key=lambda x: rrf_scores[x], reverse=True)[:fetch_n]
+
+        # Fetch any BM25-only docs not already in vector results
+        missing_ids = [doc_id for doc_id in merged_ids if doc_id not in docs_by_id]
+        if missing_ids:
+            extra = chroma_collection.get(ids=missing_ids, include=["documents", "metadatas", "embeddings"])
+            for i, doc_id in enumerate(extra["ids"]):
+                meta = extra["metadatas"][i]
+                docs_by_id[doc_id] = IndexedDoc(
+                    doc_id=int(doc_id),
+                    path=meta["path"],
+                    start_line=meta["start_line"],
+                    end_line=meta["end_line"],
+                    text=extra["documents"][i],
+                )
+                embs_by_id[doc_id] = extra["embeddings"][i]
+
+        candidate_ids = merged_ids
+    else:
+        candidate_ids = vector_ids
+
+    docs = [docs_by_id[doc_id] for doc_id in candidate_ids]
+    doc_embeddings = [embs_by_id[doc_id] for doc_id in candidate_ids]
+
+    if use_reranker and len(docs) > k:
+        global _reranker
+        if _reranker is None:
+            from sentence_transformers import CrossEncoder
+            _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        pairs = [(question, doc.text) for doc in docs]
+        scores = _reranker.predict(pairs)
+        ranked_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+        docs = [docs[i] for i in ranked_indices]
+        doc_embeddings = [doc_embeddings[i] for i in ranked_indices]
+
+    # Post-retrieval deduplication: drop near-duplicate chunks keeping highest-ranked first
+    dedup_threshold = float(os.environ.get("BOT_RETRIEVAL_DEDUP_THRESHOLD", "0.90"))
+    kept_docs = []
+    kept_embs = []
+    for doc, emb in zip(docs, doc_embeddings):
+        emb_arr = np.array(emb)
+        if kept_embs:
+            sims = np.array(kept_embs) @ emb_arr
+            if np.max(sims) >= dedup_threshold:
+                continue
+        kept_docs.append(doc)
+        kept_embs.append(emb_arr)
+        if len(kept_docs) == k:
+            break
+
+    return kept_docs
 
 
 def linkify(path: str, start_line: int, end_line: int) -> str:
@@ -329,7 +640,7 @@ def build_system_prompt() -> str:
         "You are an expert assistant for Underworld3, a geodynamics modeling framework.\n"
         "- You understand PETSc, parallel computing, finite element methods, and computational geodynamics.\n"
         "- Answer ONLY using the provided repository context.\n"
-        "- If context is insufficient, acknowledge limitations and suggest where to look.\n"
+        "- If the context does not contain enough information to answer fully, explicitly state what is missing rather than inferring or guessing. Do not fill gaps with general knowledge.\n"
         "- Provide concise, correct, runnable code examples with proper imports.\n"
         "- ALWAYS cite file paths and line ranges (format: `file.py:123-145`).\n"
         "- For solver questions, mention PETSc compatibility requirements.\n"
@@ -368,12 +679,13 @@ def call_llm_with_caching(system_prompt: str, user_prompt: str, context: str) ->
             system=[
                 {
                     "type": "text",
-                    "text": system_prompt
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"}  # Cache system prompt (1hr TTL)
                 },
                 {
                     "type": "text",
                     "text": f"Repository context (this is cached for efficiency):\n\n{context}",
-                    "cache_control": {"type": "ephemeral"}  # Cache this part!
+                    "cache_control": {"type": "ephemeral"}  # Cache context (1hr TTL)
                 }
             ],
             messages=[
@@ -381,7 +693,8 @@ def call_llm_with_caching(system_prompt: str, user_prompt: str, context: str) ->
                     "role": "user",
                     "content": user_prompt
                 }
-            ]
+            ],
+            extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"}
         )
 
         return message.content[0].text
@@ -412,15 +725,17 @@ def enforce_citations(answer_md: str, ctx: List[IndexedDoc]) -> Tuple[str, List[
 def ask(q: Query):
     start_time = time.time()
 
-    ctx = retrieve(q.question, k=q.max_context_items)
+    ctx = retrieve(q.question, k=q.max_context_items, use_reranker=True, n_candidates=20, use_hybrid=USE_HYBRID_SEARCH, use_hyde=USE_HYDE)
     system_prompt = build_system_prompt()
     context_text = format_context(ctx)
     user_prompt = (
         f"Question: {q.question}\n\n"
-        "Provide a clear markdown answer with code examples if applicable. "
+        "Be concise — answer directly and completely, but avoid unnecessary explanation. "
+        "Include code examples only when they add clarity. "
         "Include citations to specific files and line ranges."
     )
     raw = call_llm_with_caching(system_prompt, user_prompt, context_text)
+    print(f"raw llm output: \n {raw}")
     answer, citations, used_files = enforce_citations(raw, ctx)
     confidence = 0.5 if "don't have" in answer or "Claude" in answer and "error" in answer else 0.8
 
@@ -450,7 +765,7 @@ def health_check():
     return {
         "status": "ok",
         "index_built": index_built,
-        "doc_count": len(doc_store) if doc_store else 0,
+        "doc_count": chroma_collection.count() if chroma_collection else 0,
         "embedding_model": MODEL_NAME,
         "claude_model": CLAUDE_MODEL
     }
@@ -509,13 +824,13 @@ def write_port_file(port, port_file="bot.port"):
     """
     port_path = Path(__file__).parent / port_file
     port_path.write_text(str(port))
-    print(f"📝 Port {port} written to {port_path}")
+    print(f"Port {port} written to {port_path}")
 
 
 if __name__ == "__main__":
     # Find available port
     port = find_available_port(8001)
-    print(f"🚀 Starting HelpfulBatBot on port {port}")
+    print(f"Starting HelpfulBatBot on port {port}")
 
     # Write port to file for clients
     write_port_file(port)

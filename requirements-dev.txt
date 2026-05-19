@@ -1,0 +1,7 @@
+# Dev/eval dependencies — used by eval.py, compare_claude_vs_rag.py, app_ui.py
+# Install: pip install -r requirements.txt -r requirements-dev.txt
+
+ragas
+datasets
+langchain-anthropic
+streamlit

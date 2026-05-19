@@ -1,78 +1,67 @@
 # Content Sources Configuration for HelpfulBatBot
 #
-# This file defines which repositories to index for the Q&A bot.
-# The bot will clone/update these repositories and index the specified files.
+# NOTE: This file documents what the bot indexes.
+# The actual filtering is hardcoded in should_include_file() in HelpfulBat_app.py.
+# content_manager.py reads this file but is not used by the main app.
 
 content_sources:
-  # Primary source: Underworld3 main repository
   - name: "underworld3"
     type: "git"
     url: "https://github.com/underworldcode/underworld3.git"
     branch: "main"
     local_path: "./content_cache/underworld3"
-
-    # How often to update content
-    # Options: "on_startup", "hourly", "daily", "never"
     update_frequency: "daily"
 
-    # What to index from this repository
+    # Files indexed (mirrors default_includes in should_include_file())
     include_paths:
-      # Beginner tutorials
+      # Beginner tutorials and docs
       - "docs/beginner/tutorials/*.ipynb"
       - "docs/beginner/tutorials/*.md"
+      - "docs/beginner/*.md"
 
-      # Example scripts
-      - "examples/*.ipynb"
-      - "examples/*.py"
+      # Advanced documentation
+      - "docs/advanced/**/*.md"
+      - "docs/advanced/**/*.ipynb"
 
-      # A/B grade tests (user-facing test examples)
-      - "tests/test_0[0-6]*.py"
-
-      # Main documentation
+      # Top-level docs
+      - "docs/*.md"
       - "README.md"
       - "CLAUDE.md"
 
-    # What NOT to index
+      # Example scripts and notebooks
+      - "examples/*.ipynb"
+      - "examples/*.py"
+
+      # A/B grade tests (user-facing examples)
+      - "tests/test_0[0-6]*.py"
+
+      # UW3 source: function signatures, docstrings, API
+      - "src/underworld3/**/*.py"
+
+    # Files excluded (mirrors default_excludes in should_include_file())
     exclude_paths:
-      # Source code internals
-      - "src/**/*"
-
-      # Developer documentation
+      - "src/petsc/**/*"
+      - "src/cmake/**/*"
       - "docs/developer/**/*"
-
-      # Planning documents
+      - "docs/planning/**/*"
       - "planning/**/*"
-
-      # Build artifacts
-      - "build/**/*"
-      - "dist/**/*"
-      - "*.egg-info/**/*"
-
-      # Git and config
+      - "tests/test_[7-9]*.py"
+      - "tests/test_1*.py"
       - ".git/**/*"
+      - "**/__pycache__/**/*"
+      - "build/**/*"
       - ".github/**/*"
-      - ".pixi/**/*"
+      - ".ipynb_checkpoints/**/*"
+      - ".pytest_cache/**/*"
+      - ".quarto/**/*"
+      - "_freeze/**/*"
+      - "docs/.quarto/**/*"
+      - "docs/_freeze/**/*"
+      - "HelpfulBatBot/**/*"
+      - "conda/**/*"
+      - "publications/**/*"
+      - "docs_legacy/**/*"
+      - "**/output/**/*"
 
-      # Python cache
-      - "__pycache__/**/*"
-      - "*.pyc"
-
-    # Metadata
-    priority: 1.0  # Higher priority = ranked higher in search results
+    priority: 1.0
     source_label: "Underworld3 Official Documentation"
-
-  # Future: Add more repositories here
-  #
-  # - name: "underworld3-documentation"
-  #   type: "git"
-  #   url: "https://github.com/underworldcode/underworld3-documentation.git"
-  #   branch: "main"
-  #   local_path: "./content_cache/underworld3-documentation"
-  #   update_frequency: "daily"
-  #   include_paths:
-  #     - "**/*.md"
-  #     - "**/*.ipynb"
-  #   exclude_paths:
-  #     - ".git/**/*"
-  #   priority: 0.9
-  #   source_label: "Extended Documentation"

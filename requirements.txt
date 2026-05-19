@@ -1,13 +1,14 @@
-# HelpfulBatBot Dependencies
-# Python packages needed to run the bot
+# Runtime dependencies — used by HelpfulBat_app.py (API server)
+# Install: pip install -r requirements.txt
 
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pydantic==2.5.0
-anthropic==0.7.8
-sentence-transformers==2.2.2
-faiss-cpu==1.7.4
-numpy==1.24.3
-requests==2.31.0
-python-dotenv==1.0.0
-PyYAML==6.0.1
+fastapi
+uvicorn[standard]
+pydantic
+anthropic
+sentence-transformers
+chromadb
+numpy
+requests
+python-dotenv
+PyYAML
+rank_bm25

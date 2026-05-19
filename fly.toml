@@ -10,11 +10,12 @@ primary_region = "syd"  # Sydney, Australia
 [env]
   PORT = "8001"
   CONTENT_UPDATE_FREQUENCY = "daily"
+  BOT_INDEX_CACHE = "/app/content_cache/index_cache"
 
 [http_service]
   internal_port = 8001
   force_https = true
-  auto_stop_machines = false  # Keep always running
+  auto_stop_machines = true   # Stop when idle to reduce cost
   auto_start_machines = true
   min_machines_running = 1
 
@@ -35,7 +36,7 @@ primary_region = "syd"  # Sydney, Australia
 [[vm]]
   cpu_kind = "shared"
   cpus = 1
-  memory_mb = 1024
+  memory_mb = 2048
 
 # Secrets (set with flyctl secrets set)
 # flyctl secrets set ANTHROPIC_API_KEY=sk-ant-...
