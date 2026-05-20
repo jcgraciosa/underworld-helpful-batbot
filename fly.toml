@@ -11,17 +11,18 @@ primary_region = "syd"  # Sydney, Australia
   PORT = "8001"
   CONTENT_UPDATE_FREQUENCY = "daily"
   BOT_INDEX_CACHE = "/app/content_cache/index_cache"
+  BOT_REPO_PATH = "/app/content_cache/underworld3"
 
 [http_service]
   internal_port = 8001
   force_https = true
   auto_stop_machines = true   # Stop when idle to reduce cost
   auto_start_machines = true
-  min_machines_running = 1
+  min_machines_running = 1    # Keep alive during first index build; set to 0 after
 
   # HTTP service health checks
   [[http_service.checks]]
-    grace_period = "60s"
+    grace_period = "300s"
     interval = "30s"
     method = "GET"
     timeout = "5s"
