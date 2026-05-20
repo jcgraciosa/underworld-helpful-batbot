@@ -18,7 +18,7 @@ primary_region = "syd"  # Sydney, Australia
   force_https = true
   auto_stop_machines = true   # Stop when idle to reduce cost
   auto_start_machines = true
-  min_machines_running = 0    # Sleep when idle; cold start ~30-60s
+  min_machines_running = 1    # Temporarily 1 until index fully written to disk
 
   # HTTP service health checks
   [[http_service.checks]]
