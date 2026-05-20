@@ -117,48 +117,68 @@ def should_include_file(rel_path: str) -> bool:
     path = PurePosixPath(rel_path)
 
     # Default: index user-facing content only
+    # Note: pathlib.match() in Python <3.12 requires ** to match at least one directory
+    # level, so we add both the direct (*.py) and recursive (**/*.py) patterns.
     default_includes = [
         "docs/beginner/tutorials/*.ipynb",
         "docs/beginner/tutorials/*.md",
         "docs/beginner/*.md",
+        "docs/advanced/*.md",        # top-level advanced docs (e.g. troubleshooting.md)
+        "docs/advanced/**/*.md",     # advanced docs in subdirectories
+        "docs/advanced/*.ipynb",
         "docs/advanced/**/*.ipynb",
-        "docs/advanced/**/*.md",
         "examples/*.ipynb",
         "examples/*.py",
         "tests/test_0[0-6]*.py",  # A/B grade tests only
         "README.md",
         "CLAUDE.md",
         "docs/*.md",
-        "src/underworld3/**/*.py",  # UW3 source: function signatures, docstrings, API
+        "src/underworld3/*.py",      # top-level UW3 source (swarm.py, constitutive_models.py, etc.)
+        "src/underworld3/**/*.py",   # UW3 source in subdirectories (systems/, meshing/, etc.)
     ]
 
     # Default: exclude internal implementation details
+    # Note: pathlib.match() in Python <3.12 requires ** to match at least one
+    # directory level, so patterns like .git/**/* miss top-level files like
+    # .git/config. We add both pattern/* and pattern/**/* for each case.
     default_excludes = [
         "src/petsc/**/*",          # PETSc internals (not user-facing)
-        "src/cmake/**/*",          # Build system files
-        "docs/developer/**/*",     # Developer docs
-        "docs/planning/**/*",      # Planning documents in docs
+        "src/cmake/*",             # Build system files (top-level)
+        "src/cmake/**/*",
+        "docs/developer/*",        # Developer docs (top-level)
+        "docs/developer/**/*",
+        "docs/planning/*",         # Planning documents
+        "docs/planning/**/*",
         "planning/**/*",           # Planning documents
         "SESSION-SUMMARY-*.md",    # Session summaries
         "tests/test_[7-9]*.py",    # C/D grade tests
         "tests/test_1*.py",        # Complex tests
-        ".git/**/*",               # Git metadata
-        "**/__pycache__/**/*",     # Python cache
+        ".git/*",                  # Git metadata (top-level files e.g. .git/config)
+        ".git/**/*",
+        "__pycache__/*",           # Python cache (direct)
+        "**/__pycache__/*",
+        "**/__pycache__/**/*",
         "build/**/*",              # Build artifacts
         ".github/**/*",            # GitHub workflows
-        ".ipynb_checkpoints/**/*", # Notebook checkpoints
-        ".pytest_cache/**/*",      # Pytest cache
-        ".quarto/**/*",            # Quarto build files
+        ".ipynb_checkpoints/*",    # Notebook checkpoints
+        ".ipynb_checkpoints/**/*",
+        ".pytest_cache/*",         # Pytest cache
+        ".pytest_cache/**/*",
+        ".quarto/*",               # Quarto build files
+        ".quarto/**/*",
         "_freeze/**/*",            # Quarto frozen files
         "docs/.quarto/**/*",       # Quarto docs cache
         "docs/_freeze/**/*",       # Quarto docs frozen
-        "HelpfulBatBot/**/*",          # HelpfulBatBot directory itself
-        "temp_tests_deletable/**/*",  # Temporary test files
+        "HelpfulBatBot/**/*",      # HelpfulBatBot directory itself
+        "temp_tests_deletable/**/*",
         "conda/**/*",              # Conda build files
         "publications/**/*",       # Publications (not user docs)
         "docs_legacy/**/*",        # Legacy documentation
-        "**/output/**/*",          # Output directories
-        "**/.claude/**/*",         # Claude cache
+        "**/output/*",             # Output directories
+        "**/output/**/*",
+        ".claude/*",               # Claude cache (top-level)
+        "**/.claude/*",
+        "**/.claude/**/*",
     ]
 
     # Use env vars if provided, otherwise use defaults
@@ -482,9 +502,10 @@ def ensure_index():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🔧 Building index at startup...")
-    ensure_index()
-    print("Index ready. Accepting requests.")
+    import threading
+    print("🔧 Starting index build in background (server accepting requests immediately)...")
+    t = threading.Thread(target=ensure_index, daemon=True)
+    t.start()
     yield
 
 
@@ -763,7 +784,7 @@ def ask(q: Query):
 def health_check():
     """Health check endpoint for monitoring."""
     return {
-        "status": "ok",
+        "status": "ok" if index_built else "loading",
         "index_built": index_built,
         "doc_count": chroma_collection.count() if chroma_collection else 0,
         "embedding_model": MODEL_NAME,
