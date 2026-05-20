@@ -23,8 +23,8 @@
 
 # --- Hidden code comment contradictions ---
 
-- question: "What smoothing value does SNES_AdvectionDiffusion apply to the SemiLagrangian_DDt operator by default, and what does the source code recommend?"
-  reference: "Default smoothing=0.0. The code comment in solvers.py states: 'Smoothing is generally required for stability. 0.0001 is effective at the various resolutions tested.' The default contradicts the recommended best practice in the same code section."
+- question: "What smoothing value does SNES_AdvectionDiffusion apply to the SemiLagrangian_DDt operator by default, and what value is hardcoded for the internal flux tensor projection?"
+  reference: "Default smoothing=0.0 for the SemiLagrangian psi tracking. The internal flux tensor (F) projection within the same solver hardcodes smoothing=0.0001. These two different smoothing values coexist in the same solver — the psi tracking uses no smoothing while the flux projection applies light regularisation."
   type: "rag-specific"
 
 # --- Non-obvious parameter internals ---
@@ -66,7 +66,7 @@
   type: "baseline"
 
 - question: "What internal SwarmVariables does Underworld3 automatically create on every Swarm, and what are they used for?"
-  reference: "Two internal SwarmVariables are auto-created: _X0 (stores particle start-of-advection position) and _remeshed (integer cycle count for streak tracking when recycle_rate > 1). Both have _proxy=False and are invisible to the user-facing API."
+  reference: "_X0 is created on every Swarm (stores particle start-of-advection position, _proxy=False). _remeshed is only created when recycle_rate > 1 (default recycle_rate=0, so absent by default) — it tracks an integer cycle count for particle streak visualisation. Both are invisible to the user-facing API."
   type: "rag-specific"
 
 # --- General FEM / guessable from conventions ---
@@ -126,9 +126,6 @@
   reference: "_needs_function_rewire is set to True when constitutive model parameters (e.g. viscosity expression) change, triggering a recompilation of the F1 residual and Jacobians on the next solve(). Changing only boundary condition values does not trigger a rewire."
   type: "rag-specific"
 
-- question: "What are the most common causes of NaN appearing in an Underworld3 Stokes or advection-diffusion solution?"
-  reference: "Common causes: (1) division by zero in viscosity — set strainrate_inv_II_min > 0; (2) timestep too large — reduce delta_t; (3) conflicting or underdetermined boundary conditions; (4) loss of particle coverage during swarm advection causing projection extrapolation."
-  type: "rag-specific"
 
 - question: "What does SNES DIVERGED_ITS mean in an Underworld3 Stokes solve, and what are the recommended approaches to address it?"
   reference: "SNES DIVERGED_ITS means the nonlinear solver hit its iteration limit. Common fixes: set stokes.saddle_preconditioner = 1/viscosity for large viscosity contrasts (>1e6); loosen stokes.tolerance; or improve initial conditions. Increasing snes_max_it is a last resort, not a fix."
@@ -184,38 +181,8 @@
 
 # --- PETSc concepts ---
 
-- question: "What does SNES stand for in PETSc and what is it used for?"
-  reference: "SNES stands for Scalable Nonlinear Equations Solvers. It is PETSc's framework for solving systems of nonlinear equations using Newton-like iteration. SNES manages the outer nonlinear loop, calling a KSP solver for each linear sub-problem at each Newton step. UW3 Stokes and advection-diffusion solvers are built on SNES."
-  type: "baseline"
-
-- question: "What does KSP stand for in PETSc and what types of methods does it cover?"
-  reference: "KSP stands for Krylov SubSpace methods. It is PETSc's framework for solving linear systems using iterative Krylov methods such as GMRES, CG, MINRES, and BiCGStab. KSP is called at each SNES iteration to solve the linearised system. The choice of KSP type and its preconditioner (PC) significantly affects solver performance."
-  type: "baseline"
-
-- question: "What does DIVERGED_ITS mean as a PETSc KSP convergence reason, and how does it differ from SNES DIVERGED_ITS?"
-  reference: "KSP DIVERGED_ITS means the linear solver reached its maximum iteration count without converging to the requested tolerance. Unlike SNES DIVERGED_ITS (nonlinear solver exceeded max iterations), KSP DIVERGED_ITS typically indicates the preconditioner is insufficient — the linear system is not being solved accurately enough per Newton step. Common fixes are improving the preconditioner, switching KSP type, or increasing ksp_max_it as a last resort."
-  type: "baseline"
-
 - question: "What is GAMG in PETSc and why is it effective for the velocity block in Stokes solves?"
   reference: "GAMG (Geometric Algebraic MultiGrid) is PETSc's algebraic multigrid preconditioner. It constructs a hierarchy of coarser representations automatically from the matrix structure, without requiring explicit geometric information. It is effective for elliptic problems like the momentum equation in Stokes flow because multigrid converges in a mesh-independent number of iterations. UW3 uses GAMG with aggregation (pc_gamg_type=agg) as its default preconditioner for the velocity block."
-  type: "baseline"
-
-- question: "What is a saddle point problem and why does incompressible Stokes flow produce one?"
-  reference: "A saddle point problem is a linear system of the form [A B; B^T 0][u; p] = [f; g], where the system matrix is indefinite (has both positive and negative eigenvalues). Incompressible Stokes flow produces a saddle point system because the incompressibility constraint (div u = 0) acts as a Lagrange multiplier coupling velocity (A block) and pressure (B block), introducing a zero diagonal block. This structure requires specialised preconditioners such as block-diagonal or Schur complement approaches."
-  type: "baseline"
-
-- question: "What is the inf-sup condition (LBB condition) in mixed finite element methods, and why does it matter for Stokes flow?"
-  reference: "The inf-sup (Ladyzhenskaya-Babuška-Brezzi, LBB) condition is a stability requirement for mixed finite element formulations. It states that the discrete pressure and velocity spaces must satisfy inf_q sup_v (div v, q) / (||v|| ||q||) ≥ β > 0 for a mesh-independent constant β. If violated, the discrete pressure develops spurious oscillations. Taylor-Hood elements (P2/P1 — degree-2 velocity, degree-1 pressure) satisfy the inf-sup condition, which is why UW3 defaults to degree=2 for Stokes solver variables."
-  type: "baseline"
-
-- question: "What is a fieldsplit preconditioner in PETSc and how is it applied to Stokes systems?"
-  reference: "A fieldsplit preconditioner (pc_type=fieldsplit) decomposes a block system by field and applies separate sub-preconditioners to each block. For Stokes, it separates velocity and pressure, applying GAMG to the velocity block and a mass matrix approximation (inverse viscosity) to the pressure block. This exploits the saddle point structure. UW3's default Stokes preconditioner uses fieldsplit with an upper triangular factorisation of the blocks."
-  type: "baseline"
-
-# --- FEM concepts ---
-
-- question: "What is the difference between a Dirichlet and a Neumann boundary condition in finite element analysis?"
-  reference: "A Dirichlet (essential) boundary condition specifies the value of the solution on the boundary — e.g., temperature = 300 K or velocity = 0. It is imposed strongly by modifying the system matrix. A Neumann (natural) boundary condition specifies the flux or derivative normal to the boundary — e.g., zero heat flux or prescribed traction. In FEM, Neumann conditions arise naturally from the weak form boundary integral and do not require matrix modification. A homogeneous Neumann BC (zero flux) is the default when no condition is applied to a boundary."
   type: "baseline"
 
 - question: "What is a Taylor-Hood element and why is it used for Stokes flow?"
@@ -232,20 +199,8 @@
   reference: "The Courant-Friedrichs-Lewy (CFL) condition is a necessary stability criterion for explicit time integration of advection equations: CFL = u·Δt/Δx ≤ C_max, where u is velocity, Δt the timestep, Δx the mesh spacing, and C_max a scheme-dependent constant (typically 1 for first-order upwind). Violating the CFL condition causes the numerical solution to blow up. Semi-Lagrangian advection (used in UW3's SemiLagrangian_DDt) is unconditionally stable and not subject to a CFL restriction, which is one of its key advantages over explicit Eulerian advection."
   type: "baseline"
 
-- question: "What is Newton's method in the context of nonlinear finite element problems?"
-  reference: "Newton's method linearises a nonlinear residual F(u) = 0 by iteratively solving J(u_k) Δu = -F(u_k), where J is the Jacobian (tangent stiffness matrix), then updating u_{k+1} = u_k + Δu. It converges quadratically near the solution but requires forming and factoring the Jacobian at each iteration. In PETSc (SNES), Newton's method with line search (snes_type=newtonls) is the default nonlinear solver. For mildly nonlinear problems like viscous flow, it typically converges in a few iterations."
-  type: "baseline"
-
-- question: "What is GMRES and when is it preferred over Conjugate Gradient (CG) for linear systems?"
-  reference: "GMRES (Generalised Minimal RESidual) is a Krylov iterative method for non-symmetric linear systems. It minimises the residual over the Krylov subspace at each step. CG requires the matrix to be symmetric positive definite; Stokes systems are neither, due to their saddle point structure. GMRES handles non-symmetric and indefinite systems, making it appropriate for Stokes solves. UW3 defaults to GMRES (ksp_type=gmres) for Stokes solves."
-  type: "baseline"
-
 - question: "What is Rayleigh-Bénard convection and what dimensionless number governs it?"
   reference: "Rayleigh-Bénard convection is thermally driven flow in a fluid layer heated from below and cooled from above. The governing dimensionless parameter is the Rayleigh number Ra = ρgαΔTd³/(ηκ), where ρ is density, g gravity, α thermal expansivity, ΔT the temperature difference, d layer depth, η viscosity, and κ thermal diffusivity. Convection onset occurs at Ra ≈ 1708 for a flat layer with rigid boundaries. It is a standard benchmark for coupled Stokes and advection-diffusion solvers in geodynamics and is demonstrated in UW3's Tutorial 15."
-  type: "baseline"
-
-- question: "What is the difference between Lagrangian and Eulerian descriptions of fluid flow in numerical geodynamics?"
-  reference: "In a Lagrangian description, the computational grid or particles move with the fluid — each node tracks the same material point through time, naturally capturing material interfaces and history-dependent properties but requiring remeshing when the grid distorts. In an Eulerian description, the grid is fixed in space and fluid flows through it. UW3 uses a mixed approach: an Eulerian fixed mesh for the velocity-pressure Stokes solve, and Lagrangian particle swarms to track material properties and history variables such as accumulated strain or stress."
   type: "baseline"
 
 # =============================================================================
@@ -268,9 +223,6 @@
   reference: "You must run './uw build' (or equivalently 'pixi run build', which internally runs 'pip install . --no-build-isolation') after any source code changes. UW3 uses Cython for its core components which must be compiled before changes take effect — the installed package in site-packages will otherwise reflect stale code. Editable installs (pip install -e .) are explicitly not supported and break worktree isolation. Skipping the build means your Python session silently uses old compiled code with no error or warning."
   type: "rag-specific"
 
-- question: "What are the pixi test commands in Underworld3 and how do they differ in scope?"
-  reference: "'pixi run test' runs the quick level-1 test suite, taking approximately 2 minutes and covering basic functionality. 'pixi run test-all' runs the full test suite. The level distinction matters when iterating on changes — level-1 tests provide fast feedback while the full suite is needed before merging. Tests validate solver correctness and are part of the CI/CD pipeline."
-  type: "rag-specific"
 
 # --- SymPy and coordinate system ---
 
@@ -290,8 +242,8 @@
 
 # --- Tutorial content ---
 
-- question: "Which Underworld3 beginner tutorial covers multi-material models using IndexSwarmVariable, and what is the benchmark problem used?"
-  reference: "Tutorial 11 (11-Multi-Material_SolCx.ipynb) covers multi-material models using IndexSwarmVariable. The benchmark is SolCx — a manufactured solution for Stokes flow with a sharp viscosity discontinuity at x=0.5. IndexSwarmVariable assigns an integer material index to each particle, used to select material properties per particle via conditional SymPy expressions. SolCx has an analytic solution, making it suitable for convergence testing."
+- question: "What is the SolCx benchmark in Underworld3, and which beginner tutorial demonstrates it using IndexSwarmVariable?"
+  reference: "SolCx is a manufactured solution for Stokes flow with a sharp viscosity discontinuity at x=0.5 — it has an analytic solution, making it suitable for convergence testing. It is demonstrated in Tutorial 11 (11-Multi-Material_SolCx.ipynb), which shows how IndexSwarmVariable assigns an integer material index to each particle to select material properties via conditional SymPy expressions."
   type: "rag-specific"
 
 # --- Projection ---
@@ -309,7 +261,7 @@
 # --- Swarm advection parameters ---
 
 - question: "What does the corrector parameter in swarm.advection() do, and what is its default?"
-  reference: "corrector defaults to False. When set to True, swarm.advection() uses a predictor-corrector scheme: it first takes a full Euler step (predictor) to estimate the new particle position, then averages the velocity at the original and predicted positions to compute a corrected displacement (corrector step). This improves accuracy from first-order to second-order in time for the particle trajectories, at the cost of two velocity evaluations per substep instead of one. The order=2 default (midpoint algorithm) already provides second-order accuracy without the corrector; corrector=True is an alternative second-order approach."
+  reference: "corrector defaults to False. When set to True, swarm.advection() uses a predictor-corrector scheme: it takes a full Euler step to get a predicted position, then sets the final position to 0.5*(X_predicted + X_original) — averaging positions, not velocities. This improves trajectory accuracy at the cost of two velocity evaluations per substep instead of one."
   type: "rag-specific"
 
 - question: "What is the restore_points_to_domain_func parameter in swarm.advection(), and when would you use it?"
@@ -317,14 +269,6 @@
   type: "rag-specific"
 
 # --- Additional Class B ---
-
-- question: "What is the Boussinesq approximation in geodynamic modelling and what does it simplify?"
-  reference: "The Boussinesq approximation assumes density variations are small enough that they can be neglected everywhere except in the buoyancy term of the momentum equation. This means the continuity equation reduces to div u = 0 (incompressible), eliminating acoustic waves and allowing a much larger timestep. Density appears only as ρ = ρ_0(1 - αT) in the buoyancy body force. The approximation is valid when density variations are much smaller than the reference density — appropriate for most mantle convection problems but not for compressible flow or very large pressure ranges."
-  type: "baseline"
-
-- question: "What is a preconditioner in the context of iterative linear solvers, and why is it needed?"
-  reference: "A preconditioner is an operator P that transforms the linear system Ax = b into a better-conditioned equivalent (P^{-1}A)x = P^{-1}b, which iterative solvers can solve in fewer iterations. Without preconditioning, iterative Krylov methods converge slowly or not at all for ill-conditioned systems — the number of iterations grows with the condition number of A. A good preconditioner approximates A^{-1} cheaply. For Stokes systems in UW3, the default preconditioner combines GAMG for the velocity block and an inverse viscosity approximation for the pressure block, exploiting the block saddle point structure."
-  type: "baseline"
 
 # =============================================================================
 # CLASS A — units, multi-material, spherical geometry, advdiff, visualisation,
@@ -334,11 +278,11 @@
 # --- Units and non-dimensionalisation ---
 
 - question: "How do you create a physical quantity with units in Underworld3, and what module provides unit definitions?"
-  reference: "Use `uw.units` (a Pint-based registry): e.g. `1500 * uw.units.K` for temperature or `1e21 * uw.units.Pa * uw.units.s` for viscosity. Geoscience shortcuts include `uw.units.Ma` (million years) and `uw.units.cm / uw.units.year` for plate velocities."
+  reference: "Use `uw.scaling.units` (a Pint UnitRegistry): assign `u = uw.scaling.units`, then create quantities by multiplying — e.g. `100.0 * u.km` or `1e21 * u.Pa * u.s`. Geoscience shortcuts include `u.Ma` (million years) and `u.cm / u.year` for plate velocities."
   type: "rag-specific"
 
 - question: "What functions does Underworld3 provide to convert between dimensional and non-dimensional quantities, and what must be set up first?"
-  reference: "Call `set_reference_quantities()` to define reference scales, then use `uw.non_dimensionalise(quantity)` to obtain a dimensionless float and `uw.dimensionalise(value, units)` to convert back. Without reference quantities defined first, non-dimensionalisation will raise an error."
+  reference: "Call `uw.scaling.get_coefficients()` to get the scaling dict, then assign reference values (e.g. `scaling_coefficients[\"[length]\"] = KL_meters`). Use `uw.scaling.non_dimensionalise(quantity)` to get a dimensionless float and `uw.scaling.dimensionalise(value, units)` to convert back."
   type: "rag-specific"
 
 # --- Multi-material / IndexSwarmVariable ---
@@ -347,7 +291,7 @@
   reference: "IndexSwarmVariable assigns an integer material index (0, 1, 2, ...) to each particle and generates level-set functions φ_i(x) from particle positions. The composite constitutive flux is Σ φ_i(x) · f_i(x) — a weighted average over materials present in each element, with each material having its own constitutive model."
   type: "rag-specific"
 
-- question: "In Tutorial 11 (Multi-Material SolCx), what viscosity ratio is used and where is the material boundary?"
+- question: "In the Underworld3 SolCx multi-material benchmark, what viscosity ratio is used between the two materials and where is the material boundary located?"
   reference: "Material 0 has viscosity η=1, material 1 has viscosity η=10^6 — a ratio of 10^6. The material boundary sits at x=0.5. Free-slip BCs are applied on all boundaries and the body force is f_y = -cos(πx)sin(2πy)."
   type: "rag-specific"
 

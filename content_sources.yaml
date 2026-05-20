@@ -19,8 +19,10 @@ content_sources:
       - "docs/beginner/tutorials/*.md"
       - "docs/beginner/*.md"
 
-      # Advanced documentation
+      # Advanced documentation (both top-level and subdirectories)
+      - "docs/advanced/*.md"
       - "docs/advanced/**/*.md"
+      - "docs/advanced/*.ipynb"
       - "docs/advanced/**/*.ipynb"
 
       # Top-level docs
@@ -35,7 +37,8 @@ content_sources:
       # A/B grade tests (user-facing examples)
       - "tests/test_0[0-6]*.py"
 
-      # UW3 source: function signatures, docstrings, API
+      # UW3 source: top-level and subdirectories
+      - "src/underworld3/*.py"
       - "src/underworld3/**/*.py"
 
     # Files excluded (mirrors default_excludes in should_include_file())
