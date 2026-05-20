@@ -62,7 +62,7 @@ if prompt := st.chat_input("Ask a question about Underworld3..."):
                 response = requests.post(
                     f"{API_URL}/ask",
                     json={"question": prompt, "max_context_items": 10},
-                    timeout=120,
+                    timeout=600,
                 )
                 response.raise_for_status()
                 data = response.json()
