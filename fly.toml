@@ -35,10 +35,10 @@ primary_region = "syd"  # Sydney, Australia
   destination = "/app/content_cache"
 
 [[vm]]
-  cpu_kind = "shared"
+  cpu_kind = "performance"
   cpus = 1
   memory_mb = 2048
-  size = "shared-cpu-1x"
+  size = "performance-1x"
 
 # Secrets (set with flyctl secrets set)
 # flyctl secrets set ANTHROPIC_API_KEY=sk-ant-...

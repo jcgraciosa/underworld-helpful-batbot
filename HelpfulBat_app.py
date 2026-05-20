@@ -76,6 +76,7 @@ embedder: Optional[SentenceTransformer] = None
 _reranker = None  # Lazy-loaded CrossEncoder, cached after first use
 _bm25_index = None  # BM25Okapi index, built at index time
 _bm25_doc_ids: List[str] = []  # ChromaDB doc IDs in BM25 corpus order
+_index_lock = __import__("threading").Lock()  # Prevents duplicate ensure_index() runs
 
 
 def allowed_exts() -> set:
@@ -406,6 +407,9 @@ def ensure_index():
     global index_built, chroma_client, chroma_collection, embedder
     if index_built:
         return
+    with _index_lock:
+        if index_built:  # Re-check after acquiring lock
+            return
 
     print(f"Embedding model: {MODEL_NAME} (set BOT_EMBEDDING_MODEL to override)")
     print(f"Hybrid BM25+vector search: {'ON' if USE_HYBRID_SEARCH else 'OFF'} (set BOT_HYBRID_SEARCH=1 to enable)")
