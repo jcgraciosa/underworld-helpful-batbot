@@ -1,8 +1,6 @@
 import json
 import os
 import random
-import threading
-import time
 import requests
 import streamlit as st
 from PIL import Image
@@ -80,21 +78,11 @@ if prompt := st.chat_input("Ask a question about Underworld3..."):
 
     with st.chat_message("assistant", avatar="🦇"):
         citations = []
-        cycling = {"active": True}
         msg_cycle = _RETRIEVAL_MESSAGES.copy()
         random.shuffle(msg_cycle)
         msg_idx = [0]
         status_placeholder = st.empty()
         status_placeholder.markdown(f"*{msg_cycle[0]}*")
-
-        def _cycle_messages():
-            while cycling["active"]:
-                time.sleep(2.5)
-                if cycling["active"]:
-                    msg_idx[0] = (msg_idx[0] + 1) % len(msg_cycle)
-                    status_placeholder.markdown(f"*{msg_cycle[msg_idx[0]]}*")
-
-        threading.Thread(target=_cycle_messages, daemon=True).start()
 
         def stream_response():
             first_text = True
@@ -117,29 +105,27 @@ if prompt := st.chat_input("Ask a question about Underworld3..."):
                                 event = json.loads(data_str)
                                 if event["type"] == "text":
                                     if first_text:
-                                        cycling["active"] = False
                                         status_placeholder.empty()
                                     first_text = False
                                     yield event["text"]
+                                elif event["type"] == "status":
+                                    msg_idx[0] = (msg_idx[0] + 1) % len(msg_cycle)
+                                    status_placeholder.markdown(f"*{msg_cycle[msg_idx[0]]}*")
                                 elif event["type"] == "citations":
                                     citations.extend(event.get("citations", []))
                                 elif event["type"] == "error":
-                                    cycling["active"] = False
                                     status_placeholder.empty()
                                     yield event.get("text", "An error occurred.")
                             except json.JSONDecodeError:
                                 pass
             except requests.exceptions.Timeout:
-                cycling["active"] = False
                 status_placeholder.empty()
                 yield "The request timed out. Please try again in a moment."
             except Exception as e:
-                cycling["active"] = False
                 status_placeholder.empty()
                 yield f"Error contacting the backend: {e}"
 
         answer = st.write_stream(stream_response())
-        cycling["active"] = False
 
         if citations:
             with st.expander("Sources"):

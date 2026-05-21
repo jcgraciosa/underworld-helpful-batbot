@@ -799,8 +799,10 @@ def ask(q: Query):
 def _stream_ask(q: Query):
     """SSE generator for /ask/stream — yields text deltas then a citations event."""
     start_time = time.time()
+    yield f"data: {json.dumps({'type': 'status'})}\n\n"
     ctx = retrieve(q.question, k=q.max_context_items, use_reranker=True,
                    n_candidates=20, use_hybrid=USE_HYBRID_SEARCH, use_hyde=USE_HYDE)
+    yield f"data: {json.dumps({'type': 'status'})}\n\n"
     system_prompt = build_system_prompt()
     context_text = format_context(ctx)
     user_prompt = (
