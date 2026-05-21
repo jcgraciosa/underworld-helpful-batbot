@@ -5,6 +5,7 @@ import uvicorn
 from contextlib import asynccontextmanager
 from typing import List, Optional, Tuple
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path, PurePosixPath
 from dotenv import load_dotenv
@@ -782,6 +783,83 @@ def ask(q: Query):
     return BotResponse(
         answer=answer, citations=citations, used_files=used_files, confidence=confidence
     )
+
+
+def _stream_ask(q: Query):
+    """SSE generator for /ask/stream — yields text deltas then a citations event."""
+    start_time = time.time()
+    ctx = retrieve(q.question, k=q.max_context_items, use_reranker=True,
+                   n_candidates=20, use_hybrid=USE_HYBRID_SEARCH, use_hyde=USE_HYDE)
+    system_prompt = build_system_prompt()
+    context_text = format_context(ctx)
+    user_prompt = (
+        f"Question: {q.question}\n\n"
+        "Be concise — answer directly and completely, but avoid unnecessary explanation. "
+        "Include code examples only when they add clarity. "
+        "Include citations to specific files and line ranges."
+    )
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        yield f"data: {json.dumps({'type': 'error', 'text': 'ANTHROPIC_API_KEY not set.'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    client = anthropic.Anthropic(api_key=api_key)
+    full_text = ""
+    try:
+        with client.messages.stream(
+            model=CLAUDE_MODEL,
+            max_tokens=4096,
+            temperature=0.2,
+            system=[
+                {"type": "text", "text": system_prompt,
+                 "cache_control": {"type": "ephemeral"}},
+                {"type": "text",
+                 "text": f"Repository context (this is cached for efficiency):\n\n{context_text}",
+                 "cache_control": {"type": "ephemeral"}},
+            ],
+            messages=[{"role": "user", "content": user_prompt}],
+            extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
+        ) as stream:
+            for text in stream.text_stream:
+                full_text += text
+                yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
+    except anthropic.APIError as e:
+        yield f"data: {json.dumps({'type': 'error', 'text': f'Claude API error: {e}'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    # Compute citations from accumulated text (same logic as enforce_citations)
+    seen_paths: set = set()
+    citations: list = []
+    used_files: list = []
+    for d in ctx:
+        if d.path in full_text and d.path not in seen_paths:
+            seen_paths.add(d.path)
+            citations.append(linkify(d.path, d.start_line, d.end_line))
+            used_files.append(d.path)
+
+    # Log interaction
+    response_time_ms = int((time.time() - start_time) * 1000)
+    docs_used = [{"file": f, "doc_id": i, "score": None} for i, f in enumerate(used_files)]
+    interaction_logger.log_interaction(
+        question=q.question,
+        answer=full_text,
+        docs_used=docs_used,
+        confidence=0.8 if citations else 0.5,
+        response_time_ms=response_time_ms,
+        channel="api",
+        metadata={"citations": citations},
+    )
+
+    yield f"data: {json.dumps({'type': 'citations', 'citations': citations, 'used_files': used_files})}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+@app.post("/ask/stream")
+def ask_stream(q: Query):
+    return StreamingResponse(_stream_ask(q), media_type="text/event-stream")
 
 
 @app.get("/health")

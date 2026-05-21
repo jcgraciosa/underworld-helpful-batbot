@@ -1,3 +1,4 @@
+import json
 import os
 import requests
 import streamlit as st
@@ -26,7 +27,10 @@ with st.sidebar:
     try:
         r = requests.get(f"{API_URL}/health", timeout=5)
         data = r.json()
-        st.success(f"Backend online — {data.get('doc_count', '?')} chunks indexed")
+        if data.get("status") == "loading":
+            st.warning(f"Backend is loading the index ({data.get('doc_count', 0)} chunks so far)…")
+        else:
+            st.success(f"Backend online — {data.get('doc_count', '?')} chunks indexed")
     except Exception:
         st.error("Backend offline or starting up. Please wait and refresh.")
 
@@ -57,25 +61,41 @@ if prompt := st.chat_input("Ask a question about Underworld3..."):
         st.markdown(prompt)
 
     with st.chat_message("assistant", avatar="🦇"):
-        with st.spinner("Retrieving and generating answer..."):
-            try:
-                response = requests.post(
-                    f"{API_URL}/ask",
-                    json={"question": prompt, "max_context_items": 10},
-                    timeout=600,
-                )
-                response.raise_for_status()
-                data = response.json()
-                answer = data["answer"]
-                citations = data.get("citations", [])
-            except requests.exceptions.Timeout:
-                answer = "The request timed out. The server may be starting up — please try again in a moment."
-                citations = []
-            except Exception as e:
-                answer = f"Error contacting the backend: {e}"
-                citations = []
+        citations = []
 
-        st.markdown(answer)
+        def stream_response():
+            try:
+                with requests.post(
+                    f"{API_URL}/ask/stream",
+                    json={"question": prompt, "max_context_items": 10},
+                    stream=True,
+                    timeout=600,
+                ) as r:
+                    r.raise_for_status()
+                    for line in r.iter_lines():
+                        if not line:
+                            continue
+                        if line.startswith(b"data: "):
+                            data_str = line[6:].decode("utf-8")
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                event = json.loads(data_str)
+                                if event["type"] == "text":
+                                    yield event["text"]
+                                elif event["type"] == "citations":
+                                    citations.extend(event.get("citations", []))
+                                elif event["type"] == "error":
+                                    yield event.get("text", "An error occurred.")
+                            except json.JSONDecodeError:
+                                pass
+            except requests.exceptions.Timeout:
+                yield "The request timed out. Please try again in a moment."
+            except Exception as e:
+                yield f"Error contacting the backend: {e}"
+
+        answer = st.write_stream(stream_response())
+
         if citations:
             with st.expander("Sources"):
                 for c in citations:
