@@ -26,6 +26,15 @@ build/
 *.index
 *.faiss
 
+# ChromaDB index (built at runtime, can be large)
+index_cache/
+
+# Eval result files (dev artifacts, not part of the app)
+*.json
+
+# Claude Code memory (local dev tool, not part of the app)
+.claude/
+
 # Model cache (sentence-transformers downloads models here)
 .cache/
 models/
@@ -57,3 +66,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 temp/
+
+# Dev notes
+dev-notes/

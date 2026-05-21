@@ -396,6 +396,15 @@ def chunk_text(path: str, text: str, max_chars: int = 2000, overlap: int = 200, 
     return chunks
 
 
+def _prewarm_reranker() -> None:
+    global _reranker
+    if _reranker is None:
+        from sentence_transformers import CrossEncoder
+        print("Pre-warming cross-encoder reranker...")
+        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        print("Reranker ready.")
+
+
 def _build_bm25(texts: List[str], doc_ids: List[str]) -> None:
     global _bm25_index, _bm25_doc_ids
     from rank_bm25 import BM25Okapi
@@ -434,6 +443,7 @@ def ensure_index():
         embedder = SentenceTransformer(MODEL_NAME)
         all_data = chroma_collection.get(include=["documents"])
         _build_bm25(all_data["documents"], all_data["ids"])
+        _prewarm_reranker()
         index_built = True
         print(f"Loaded existing index from ChromaDB ({chroma_collection.count()} chunks)")
         return
@@ -501,6 +511,7 @@ def ensure_index():
         )
 
     _build_bm25([ch.text for ch in docs], [str(ch.doc_id) for ch in docs])
+    _prewarm_reranker()
     index_built = True
     print(f"Indexed {len(docs)} chunks into ChromaDB")
 

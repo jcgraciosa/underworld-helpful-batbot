@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import requests
 import streamlit as st
 from PIL import Image
@@ -54,6 +55,21 @@ for msg in st.session_state.messages:
                 for c in msg["citations"]:
                     st.markdown(f"- `{c}`")
 
+_RETRIEVAL_MESSAGES = [
+    "Rifting through the knowledge base...",
+    "Subducting your query...",
+    "Convecting through relevant chunks...",
+    "Cross-encoding the vibes...",
+    "Interrogating the source code...",
+    "Triangulating finite element wisdom...",
+    "Pressurising the PETSc solver...",
+    "Plume-ing through the docs...",
+    "Hypothetically speaking...",
+    "Sieving through indexed chunks...",
+    "Asking the mantle for answers...",
+    "Reranking tectonic possibilities...",
+]
+
 # --- Input ---
 if prompt := st.chat_input("Ask a question about Underworld3..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -62,8 +78,11 @@ if prompt := st.chat_input("Ask a question about Underworld3..."):
 
     with st.chat_message("assistant", avatar="🦇"):
         citations = []
+        status_placeholder = st.empty()
+        status_placeholder.markdown(f"*{random.choice(_RETRIEVAL_MESSAGES)}*")
 
         def stream_response():
+            first_text = True
             try:
                 with requests.post(
                     f"{API_URL}/ask/stream",
@@ -82,16 +101,22 @@ if prompt := st.chat_input("Ask a question about Underworld3..."):
                             try:
                                 event = json.loads(data_str)
                                 if event["type"] == "text":
+                                    if first_text:
+                                        status_placeholder.empty()
+                                    first_text = False
                                     yield event["text"]
                                 elif event["type"] == "citations":
                                     citations.extend(event.get("citations", []))
                                 elif event["type"] == "error":
+                                    status_placeholder.empty()
                                     yield event.get("text", "An error occurred.")
                             except json.JSONDecodeError:
                                 pass
             except requests.exceptions.Timeout:
+                status_placeholder.empty()
                 yield "The request timed out. Please try again in a moment."
             except Exception as e:
+                status_placeholder.empty()
                 yield f"Error contacting the backend: {e}"
 
         answer = st.write_stream(stream_response())
