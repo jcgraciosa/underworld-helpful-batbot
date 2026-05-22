@@ -519,7 +519,7 @@ def ensure_index():
                 docs.append(ch)
         elif path.endswith(".ipynb") and USE_CELL_CHUNKING:
             try:
-                raw_json = Path(path).read_text(encoding="utf-8")
+                raw_json = (Path(repo_path) / path).read_text(encoding="utf-8")
             except Exception:
                 raw_json = content
             for ch in chunk_notebook_cells(path, raw_json, base_id=base_id):
