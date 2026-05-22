@@ -1,0 +1,24 @@
+# Copy this file to underworldcode/underworld3 repo at:
+#   .github/workflows/rebuild-helpfulbat.yml
+#
+# Then add a repository secret in that repo:
+#   Settings -> Secrets -> Actions -> New repository secret
+#   Name:  HELPFULBAT_REBUILD_TOKEN
+#   Value: (same value as REBUILD_TOKEN set in Fly.io secrets)
+
+name: Rebuild HelpfulBatBot index
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger index rebuild
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" -X POST \
+            https://underworld-helpfulbat.fly.dev/rebuild \
+            -H "X-Rebuild-Token: ${{ secrets.HELPFULBAT_REBUILD_TOKEN }}" \
+            | grep -q "^2" && echo "Rebuild triggered." || echo "Rebuild trigger failed."

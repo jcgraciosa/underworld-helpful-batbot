@@ -4,7 +4,8 @@ import json
 import uvicorn
 from contextlib import asynccontextmanager
 from typing import List, Optional, Tuple
-from fastapi import FastAPI
+import subprocess
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path, PurePosixPath
@@ -79,6 +80,7 @@ _reranker = None  # Lazy-loaded CrossEncoder, cached after first use
 _bm25_index = None  # BM25Okapi index, built at index time
 _bm25_doc_ids: List[str] = []  # ChromaDB doc IDs in BM25 corpus order
 _index_lock = __import__("threading").Lock()  # Prevents duplicate ensure_index() runs
+_rebuild_status: dict = {"state": "idle", "message": "", "started_at": None}
 
 
 def allowed_exts() -> set:
@@ -905,6 +907,44 @@ def question_patterns():
 def recent_interactions(limit: int = 10):
     """Get recent interactions for review."""
     return interaction_logger.get_interactions(limit=limit)
+
+
+def _do_rebuild():
+    global index_built, _rebuild_status
+    _rebuild_status = {"state": "running", "message": "Pulling latest UW3 repo...", "started_at": time.time()}
+    repo_path = os.environ.get("BOT_REPO_PATH", "")
+    try:
+        if repo_path:
+            subprocess.run(
+                ["git", "-C", repo_path, "pull", "--ff-only", "origin", "main"],
+                capture_output=True, timeout=120,
+            )
+        _rebuild_status["message"] = "Rebuilding index..."
+        os.environ["BOT_FORCE_REBUILD"] = "1"
+        index_built = False
+        ensure_index()
+        os.environ.pop("BOT_FORCE_REBUILD", None)
+        _rebuild_status = {"state": "done", "message": "Rebuild complete.", "started_at": _rebuild_status["started_at"]}
+    except Exception as e:
+        os.environ.pop("BOT_FORCE_REBUILD", None)
+        _rebuild_status = {"state": "error", "message": str(e), "started_at": _rebuild_status["started_at"]}
+
+
+@app.post("/rebuild")
+def trigger_rebuild(x_rebuild_token: str = Header(None)):
+    expected = os.environ.get("REBUILD_TOKEN", "")
+    if not expected or x_rebuild_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if _rebuild_status.get("state") == "running":
+        return {"status": "already_running", "message": _rebuild_status["message"]}
+    import threading
+    threading.Thread(target=_do_rebuild, daemon=True).start()
+    return {"status": "started"}
+
+
+@app.get("/rebuild/status")
+def rebuild_status():
+    return _rebuild_status
 
 
 def find_available_port(start_port=8001, max_attempts=10):
