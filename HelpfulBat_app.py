@@ -50,6 +50,7 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 USE_HYBRID_SEARCH = os.environ.get("BOT_HYBRID_SEARCH", "").lower() in ("1", "true")
 USE_HYDE = os.environ.get("BOT_HYDE", "1").lower() in ("1", "true")
 USE_AST_CHUNKING = os.environ.get("BOT_AST_CHUNKING", "1").lower() in ("1", "true")
+USE_CELL_CHUNKING = os.environ.get("BOT_CELL_CHUNKING", "1").lower() in ("1", "true")
 
 
 class Query(BaseModel):
@@ -354,6 +355,54 @@ def chunk_python_ast(path: str, text: str, max_chars: int = 2000, base_id: int =
     return chunks
 
 
+def chunk_notebook_cells(path: str, raw_json: str, max_chars: int = 2000, base_id: int = 0) -> List[IndexedDoc]:
+    """
+    Chunk a Jupyter notebook at cell boundaries.
+
+    Each non-empty cell becomes its own IndexedDoc. Cells larger than max_chars
+    fall back to chunk_text(). Falls back entirely to chunk_text() if the JSON
+    cannot be parsed.
+    """
+    try:
+        nb = json.loads(raw_json)
+    except Exception:
+        return chunk_text(path, raw_json, max_chars=max_chars, base_id=base_id)
+
+    cells = nb.get("cells", [])
+    if not cells:
+        return []
+
+    nb_name = Path(path).name
+    chunks = []
+    for i, cell in enumerate(cells):
+        cell_type = cell.get("cell_type", "")
+        source = cell.get("source", [])
+        content = "".join(source) if isinstance(source, list) else source
+        if not content.strip():
+            continue
+
+        if cell_type == "markdown":
+            cell_text = f"[{nb_name}, Cell {i + 1} — Markdown]\n{content}"
+        elif cell_type == "code":
+            cell_text = f"[{nb_name}, Cell {i + 1} — Code]\n```python\n{content}\n```"
+        else:
+            continue
+
+        if len(cell_text) <= max_chars:
+            chunks.append(IndexedDoc(
+                doc_id=base_id + len(chunks),
+                path=path, start_line=i + 1, end_line=i + 1, text=cell_text,
+            ))
+        else:
+            sub = chunk_text(path, cell_text, max_chars=max_chars, base_id=base_id + len(chunks))
+            for ch in sub:
+                ch.start_line = i + 1
+                ch.end_line = i + 1
+            chunks.extend(sub)
+
+    return chunks
+
+
 def chunk_text(path: str, text: str, max_chars: int = 2000, overlap: int = 200, base_id: int = 0) -> List[IndexedDoc]:
     # Both max_chars and overlap are in characters for consistency.
     # Step size is approximately max_chars - overlap (~1800 chars by default).
@@ -428,6 +477,7 @@ def ensure_index():
     print(f"Hybrid BM25+vector search: {'ON' if USE_HYBRID_SEARCH else 'OFF'} (set BOT_HYBRID_SEARCH=1 to enable)")
     print(f"HyDE retrieval: {'ON' if USE_HYDE else 'OFF'} (set BOT_HYDE=0 to disable)")
     print(f"AST chunking (.py): {'ON' if USE_AST_CHUNKING else 'OFF'} (set BOT_AST_CHUNKING=0 to disable)")
+    print(f"Cell chunking (.ipynb): {'ON' if USE_CELL_CHUNKING else 'OFF'} (set BOT_CELL_CHUNKING=0 to disable)")
 
     repo_path = os.environ.get("BOT_REPO_PATH")
     if not repo_path:
@@ -466,6 +516,13 @@ def ensure_index():
         base_id = len(docs)
         if path.endswith(".py") and USE_AST_CHUNKING:
             for ch in chunk_python_ast(path, content, base_id=base_id):
+                docs.append(ch)
+        elif path.endswith(".ipynb") and USE_CELL_CHUNKING:
+            try:
+                raw_json = Path(path).read_text(encoding="utf-8")
+            except Exception:
+                raw_json = content
+            for ch in chunk_notebook_cells(path, raw_json, base_id=base_id):
                 docs.append(ch)
         else:
             for ch in chunk_text(path, content, base_id=base_id):
