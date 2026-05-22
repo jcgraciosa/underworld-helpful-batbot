@@ -19,6 +19,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 import anthropic  # Claude API
 import time  # For response timing
+from functools import lru_cache
 
 # Interaction logging
 from interaction_logger import get_logger
@@ -528,6 +529,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="GitHub Repo Support Bot", lifespan=lifespan)
 
 
+@lru_cache(maxsize=256)
 def generate_hypothesis(question: str) -> str:
     """
     Generate a short hypothetical answer for HyDE retrieval.
@@ -762,7 +764,7 @@ def enforce_citations(answer_md: str, ctx: List[IndexedDoc]) -> Tuple[str, List[
 def ask(q: Query):
     start_time = time.time()
 
-    ctx = retrieve(q.question, k=q.max_context_items, use_reranker=True, n_candidates=20, use_hybrid=USE_HYBRID_SEARCH, use_hyde=USE_HYDE)
+    ctx = retrieve(q.question, k=q.max_context_items, use_reranker=True, n_candidates=10, use_hybrid=USE_HYBRID_SEARCH, use_hyde=USE_HYDE)
     system_prompt = build_system_prompt()
     context_text = format_context(ctx)
     user_prompt = (
@@ -801,7 +803,7 @@ def _stream_ask(q: Query):
     start_time = time.time()
     yield f"data: {json.dumps({'type': 'status'})}\n\n"
     ctx = retrieve(q.question, k=q.max_context_items, use_reranker=True,
-                   n_candidates=20, use_hybrid=USE_HYBRID_SEARCH, use_hyde=USE_HYDE)
+                   n_candidates=10, use_hybrid=USE_HYBRID_SEARCH, use_hyde=USE_HYDE)
     yield f"data: {json.dumps({'type': 'status'})}\n\n"
     system_prompt = build_system_prompt()
     context_text = format_context(ctx)
