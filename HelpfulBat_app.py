@@ -857,6 +857,158 @@ def ask(q: Query):
     )
 
 
+_SEARCH_DOCS_TOOL = {
+    "name": "search_docs",
+    "description": (
+        "Search the Underworld3 source code and documentation index. "
+        "Call this to find relevant code, APIs, or documentation. "
+        "Use different queries to gather comprehensive information."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search query"},
+            "k": {"type": "integer", "description": "Number of results to return (default 5)", "default": 5},
+        },
+        "required": ["query"],
+    },
+}
+
+
+def _agent_collect_chunks(
+    question: str, k: int,
+    use_reranker: bool, n_candidates: int,
+    use_hybrid: bool, use_hyde: bool,
+    max_calls: int = 4,
+) -> List[IndexedDoc]:
+    """Run tool-use agent loop to collect chunks. Returns aggregated unique chunks."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return []
+
+    client = anthropic.Anthropic(api_key=api_key)
+    messages = [{"role": "user", "content": (
+        f"Question: {question}\n\n"
+        "Use the search_docs tool to find relevant information. "
+        "Search multiple times with different queries if needed."
+    )}]
+    all_chunks: List[IndexedDoc] = []
+    seen_ids: set = set()
+    call_count = 0
+
+    while call_count < max_calls:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1024,
+            temperature=0.0,
+            system="You are a search assistant for the Underworld3 codebase. Use search_docs to gather information needed to answer the question. Stop searching when you have enough context.",
+            tools=[_SEARCH_DOCS_TOOL],
+            messages=messages,
+        )
+        messages.append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason != "tool_use":
+            break
+
+        tool_results = []
+        for block in response.content:
+            if block.type == "tool_use" and block.name == "search_docs":
+                call_count += 1
+                query = block.input.get("query", question)
+                result_k = min(int(block.input.get("k", 5)), k)
+                chunks = retrieve(
+                    query, k=result_k, use_reranker=use_reranker,
+                    n_candidates=n_candidates, use_hybrid=use_hybrid, use_hyde=use_hyde,
+                )
+                for ch in chunks:
+                    if ch.doc_id not in seen_ids:
+                        seen_ids.add(ch.doc_id)
+                        all_chunks.append(ch)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": format_context(chunks) if chunks else "No results found.",
+                })
+        messages.append({"role": "user", "content": tool_results})
+
+    return all_chunks
+
+
+def _stream_ask_agent(q: Query):
+    """SSE generator for /ask/agent/stream — agent collects chunks via tool-use, then streams answer."""
+    start_time = time.time()
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        yield f"data: {json.dumps({'type': 'error', 'text': 'ANTHROPIC_API_KEY not set.'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    yield f"data: {json.dumps({'type': 'status'})}\n\n"
+    all_chunks = _agent_collect_chunks(
+        q.question, k=q.max_context_items,
+        use_reranker=True, n_candidates=10,
+        use_hybrid=USE_HYBRID_SEARCH, use_hyde=USE_HYDE,
+        max_calls=4,
+    )
+    yield f"data: {json.dumps({'type': 'status'})}\n\n"
+
+    # Emit collected context so eval.py can record retrieved_contexts
+    yield f"data: {json.dumps({'type': 'context', 'chunks': [{'text': ch.text, 'path': ch.path, 'doc_id': ch.doc_id} for ch in all_chunks]})}\n\n"
+
+    system_prompt = build_system_prompt()
+    context_text = format_context(all_chunks)
+    user_prompt = (
+        f"Question: {q.question}\n\n"
+        "Be concise — answer directly and completely, but avoid unnecessary explanation. "
+        "Include code examples only when they add clarity. "
+        "Include citations to specific files and line ranges."
+    )
+
+    client = anthropic.Anthropic(api_key=api_key)
+    full_text = ""
+    try:
+        with client.messages.stream(
+            model=CLAUDE_MODEL,
+            max_tokens=4096,
+            temperature=0.2,
+            system=[
+                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": f"Repository context:\n\n{context_text}", "cache_control": {"type": "ephemeral"}},
+            ],
+            messages=[{"role": "user", "content": user_prompt}],
+            extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
+        ) as stream:
+            for text in stream.text_stream:
+                full_text += text
+                yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
+    except anthropic.APIError as e:
+        yield f"data: {json.dumps({'type': 'error', 'text': f'Claude API error: {e}'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    seen_paths: set = set()
+    citations: list = []
+    used_files: list = []
+    for d in all_chunks:
+        if d.path in full_text and d.path not in seen_paths:
+            seen_paths.add(d.path)
+            citations.append(linkify(d.path, d.start_line, d.end_line))
+            used_files.append(d.path)
+
+    response_time_ms = int((time.time() - start_time) * 1000)
+    docs_used = [{"file": f, "doc_id": i, "score": None} for i, f in enumerate(used_files)]
+    interaction_logger.log_interaction(
+        question=q.question, answer=full_text, docs_used=docs_used,
+        confidence=0.8 if citations else 0.5,
+        response_time_ms=response_time_ms, channel="api",
+        metadata={"citations": citations, "mode": "agent"},
+    )
+
+    yield f"data: {json.dumps({'type': 'citations', 'citations': citations, 'used_files': used_files})}\n\n"
+    yield "data: [DONE]\n\n"
+
+
 def _stream_ask(q: Query):
     """SSE generator for /ask/stream — yields text deltas then a citations event."""
     start_time = time.time()
@@ -934,6 +1086,11 @@ def _stream_ask(q: Query):
 @app.post("/ask/stream")
 def ask_stream(q: Query):
     return StreamingResponse(_stream_ask(q), media_type="text/event-stream")
+
+
+@app.post("/ask/agent/stream")
+def ask_agent_stream(q: Query):
+    return StreamingResponse(_stream_ask_agent(q), media_type="text/event-stream")
 
 
 @app.get("/health")
