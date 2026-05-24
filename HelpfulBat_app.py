@@ -920,6 +920,7 @@ def _agent_collect_chunks(
                     query, k=result_k, use_reranker=use_reranker,
                     n_candidates=n_candidates, use_hybrid=use_hybrid, use_hyde=use_hyde,
                 )
+                print(f"  [agent] call {call_count}: query='{query}', k={result_k} → {len(chunks)} chunks ({len(seen_ids)} unique so far)")
                 for ch in chunks:
                     if ch.doc_id not in seen_ids:
                         seen_ids.add(ch.doc_id)
