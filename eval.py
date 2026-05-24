@@ -191,10 +191,37 @@ def run_eval(questions_path: str, output_path: str | None, k: int = 6, use_reran
     print("\n--- Results ---")
     print(result)
 
+    # sim_to_ref: cosine similarity between answer and reference embeddings.
+    # Uses all-MiniLM-L6-v2 (symmetric similarity model, not retrieval model)
+    # so it's fair to compare across all configs regardless of retrieval budget.
+    sim_scores = []
+    if has_reference:
+        try:
+            import numpy as np
+            from sentence_transformers import SentenceTransformer
+            print("\nComputing sim_to_ref (cosine similarity to reference answer)...")
+            st_model = SentenceTransformer("all-MiniLM-L6-v2")
+            answers = rows["answer"]
+            references = rows["reference"]
+            for ans, ref in zip(answers, references):
+                if not ref:
+                    sim_scores.append(None)
+                    continue
+                embs = st_model.encode([ans, ref], normalize_embeddings=True)
+                sim_scores.append(float(np.dot(embs[0], embs[1])))
+            valid = [s for s in sim_scores if s is not None]
+            print(f"sim_to_ref (mean over {len(valid)} questions with reference): {sum(valid)/len(valid):.3f}")
+        except Exception as e:
+            print(f"Warning: sim_to_ref skipped ({e})")
+            sim_scores = [None] * len(rows["answer"])
+    else:
+        sim_scores = [None] * len(rows["answer"])
+
     if output_path:
         result_dict = result.to_pandas().to_dict(orient="records")
         for i, row in enumerate(result_dict):
             row["type"] = types[i]
+            row["sim_to_ref"] = sim_scores[i]
         Path(output_path).write_text(json.dumps(result_dict, indent=2))
         print(f"\nSaved to {output_path}")
 

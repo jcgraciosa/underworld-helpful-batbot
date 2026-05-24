@@ -879,7 +879,7 @@ def _agent_collect_chunks(
     question: str, k: int,
     use_reranker: bool, n_candidates: int,
     use_hybrid: bool, use_hyde: bool,
-    max_calls: int = 4,
+    max_calls: int = 6,
 ) -> List[IndexedDoc]:
     """Run tool-use agent loop to collect chunks. Returns aggregated unique chunks."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -959,7 +959,7 @@ def _stream_ask_agent(q: Query):
         q.question, k=q.max_context_items,
         use_reranker=True, n_candidates=10,
         use_hybrid=USE_HYBRID_SEARCH, use_hyde=USE_HYDE,
-        max_calls=4,
+        max_calls=6,
     )
     yield f"data: {json.dumps({'type': 'status'})}\n\n"
 

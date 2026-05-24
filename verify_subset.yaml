@@ -9,22 +9,22 @@
   reference: "The effective viscosity is η_eff = min(η_0, τ_y / (2·ε̇_II)), where ε̇_II = sqrt(trace(ε̇²)/2) is the second invariant of the strain rate tensor (symmetric part of ∇u). UW3 implements the min using sympy.Min() rather than a Python if/else, producing a smooth symbolic expression that can be differentiated for the Jacobian assembly. If yield_stress is sympy.oo (the default), sympy.Min() always returns η_0, giving purely viscous behaviour with no yield."
   type: "rag-specific"
 
-# Tests swarm.py (src top-level fix)
-- question: "What is IndexSwarmVariable in Underworld3 and how does it combine material properties from multiple materials?"
-  reference: "IndexSwarmVariable assigns an integer material index (0, 1, 2, ...) to each particle and generates level-set functions φ_i(x) from particle positions. The composite constitutive flux is Σ φ_i(x) · f_i(x) — a weighted average over materials present in each element, with each material having its own constitutive model."
-  type: "rag-specific"
+# # Tests swarm.py (src top-level fix)
+# - question: "What is IndexSwarmVariable in Underworld3 and how does it combine material properties from multiple materials?"
+#   reference: "IndexSwarmVariable assigns an integer material index (0, 1, 2, ...) to each particle and generates level-set functions φ_i(x) from particle positions. The composite constitutive flux is Σ φ_i(x) · f_i(x) — a weighted average over materials present in each element, with each material having its own constitutive model."
+#   type: "rag-specific"
 
-# Tests docs/advanced/troubleshooting.md (docs/advanced/ fix)
-- question: "What are the most common causes of NaN appearing in an Underworld3 Stokes or advection-diffusion solution?"
-  reference: "Common causes: (1) division by zero in viscosity — set strainrate_inv_II_min > 0; (2) timestep too large — reduce delta_t; (3) conflicting or underdetermined boundary conditions; (4) loss of particle coverage during swarm advection causing projection extrapolation."
-  type: "rag-specific"
+# # Tests docs/advanced/troubleshooting.md (docs/advanced/ fix)
+# - question: "What are the most common causes of NaN appearing in an Underworld3 Stokes or advection-diffusion solution?"
+#   reference: "Common causes: (1) division by zero in viscosity — set strainrate_inv_II_min > 0; (2) timestep too large — reduce delta_t; (3) conflicting or underdetermined boundary conditions; (4) loss of particle coverage during swarm advection causing projection extrapolation."
+#   type: "rag-specific"
 
-# Tests Cython/.pyx content (expected to still be limited)
-- question: "What does the _needs_function_rewire flag do in the Underworld3 Stokes solver, and what triggers it?"
-  reference: "_needs_function_rewire is set to True when constitutive model parameters (e.g. viscosity expression) change, triggering a recompilation of the F1 residual and Jacobians on the next solve(). Changing only boundary condition values does not trigger a rewire."
-  type: "rag-specific"
+# # Tests Cython/.pyx content (expected to still be limited)
+# - question: "What does the _needs_function_rewire flag do in the Underworld3 Stokes solver, and what triggers it?"
+#   reference: "_needs_function_rewire is set to True when constitutive model parameters (e.g. viscosity expression) change, triggering a recompilation of the F1 residual and Jacobians on the next solve(). Changing only boundary condition values does not trigger a rewire."
+#   type: "rag-specific"
 
-# Tests CLAUDE.md / pixi.toml indexing
-- question: "What are the pixi test commands in Underworld3 and how do they differ in scope?"
-  reference: "'pixi run test' runs the quick level-1 test suite, taking approximately 2 minutes and covering basic functionality. 'pixi run test-all' runs the full test suite. The level distinction matters when iterating on changes — level-1 tests provide fast feedback while the full suite is needed before merging. Tests validate solver correctness and are part of the CI/CD pipeline."
-  type: "rag-specific"
+# # Tests CLAUDE.md / pixi.toml indexing
+# - question: "What are the pixi test commands in Underworld3 and how do they differ in scope?"
+#   reference: "'pixi run test' runs the quick level-1 test suite, taking approximately 2 minutes and covering basic functionality. 'pixi run test-all' runs the full test suite. The level distinction matters when iterating on changes — level-1 tests provide fast feedback while the full suite is needed before merging. Tests validate solver correctness and are part of the CI/CD pipeline."
+#   type: "rag-specific"
