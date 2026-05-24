@@ -895,6 +895,8 @@ def _agent_collect_chunks(
     all_chunks: List[IndexedDoc] = []
     seen_ids: set = set()
     call_count = 0
+    total_retrieved = 0
+    stop_reason = "max_calls reached"
 
     while call_count < max_calls:
         response = client.messages.create(
@@ -908,6 +910,7 @@ def _agent_collect_chunks(
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason != "tool_use":
+            stop_reason = "Claude decided to stop"
             break
 
         tool_results = []
@@ -920,6 +923,7 @@ def _agent_collect_chunks(
                     query, k=result_k, use_reranker=use_reranker,
                     n_candidates=n_candidates, use_hybrid=use_hybrid, use_hyde=use_hyde,
                 )
+                total_retrieved += len(chunks)
                 print(f"  [agent] call {call_count}: query='{query}', k={result_k} → {len(chunks)} chunks ({len(seen_ids)} unique so far)")
                 for ch in chunks:
                     if ch.doc_id not in seen_ids:
@@ -931,6 +935,11 @@ def _agent_collect_chunks(
                     "content": format_context(chunks) if chunks else "No results found.",
                 })
         messages.append({"role": "user", "content": tool_results})
+
+    duplicates = total_retrieved - len(all_chunks)
+    print(f"  [agent] done: {call_count} calls, {len(all_chunks)} unique chunks, {duplicates} duplicates filtered, stopped: {stop_reason}")
+    if not all_chunks:
+        print(f"  [agent] WARNING: no chunks retrieved — answer will be generated without context")
 
     return all_chunks
 
