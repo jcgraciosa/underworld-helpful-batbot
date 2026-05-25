@@ -13,6 +13,32 @@ st.set_page_config(
     layout="centered",
 )
 
+_RETRIEVAL_MESSAGES = [
+    "Rifting through the knowledge base...",
+    "Subducting your query...",
+    "Convecting through relevant chunks...",
+    "Cross-encoding the vibes...",
+    "Interrogating the source code...",
+    "Triangulating finite element wisdom...",
+    "Pressurising the PETSc solver...",
+    "Plume-ing through the docs...",
+    "Hypothetically speaking...",
+    "Sieving through indexed chunks...",
+    "Asking the mantle for answers...",
+    "Reranking tectonic possibilities...",
+]
+
+_DEEP_MESSAGES = [
+    "Asking the manager...",
+    "Scanning source files...",
+    "Reading line by line...",
+    "Cross-referencing the implementation...",
+    "Checking the exact values...",
+    "Consulting the codebase directly...",
+    "Searching, then reading...",
+    "Going deeper underground...",
+]
+
 # --- Sidebar ---
 with st.sidebar:
     logo_path = os.path.join(os.path.dirname(__file__), "assets", "uw3_logo.png")
@@ -24,7 +50,6 @@ with st.sidebar:
     )
     st.divider()
 
-    # Health check
     try:
         r = requests.get(f"{API_URL}/health", timeout=5)
         data = r.json()
@@ -42,11 +67,36 @@ with st.sidebar:
 
     st.caption(f"API: {API_URL}")
 
+
+def _render_followup_buttons(followups: list, key_prefix: str):
+    if not followups:
+        return
+    st.markdown("**Follow-up questions:**")
+    for i, q in enumerate(followups):
+        label = q["text"] + (" *(Ask the manager 🦇)*" if q.get("deep") else "")
+        if st.button(label, key=f"{key_prefix}_{i}", use_container_width=True):
+            if q.get("deep"):
+                st.session_state["deep_question"] = q["text"]
+            else:
+                st.session_state["faq_question"] = q["text"]
+            st.rerun()
+
+
+# --- Extract session state triggers before rendering history ---
+_faq_trigger = None
+_deep_trigger = None
+if "faq_question" in st.session_state:
+    _faq_trigger = st.session_state["faq_question"]
+    del st.session_state["faq_question"]
+if "deep_question" in st.session_state:
+    _deep_trigger = st.session_state["deep_question"]
+    del st.session_state["deep_question"]
+
 # --- Chat history ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-for msg in st.session_state.messages:
+for i, msg in enumerate(st.session_state.messages):
     avatar = "🦇" if msg["role"] == "assistant" else None
     with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
@@ -54,31 +104,24 @@ for msg in st.session_state.messages:
             with st.expander("Sources"):
                 for c in msg["citations"]:
                     st.markdown(f"- `{c}`")
+        if msg.get("followups"):
+            _render_followup_buttons(msg["followups"], key_prefix=f"hist_{i}")
 
-_RETRIEVAL_MESSAGES = [
-    "Rifting through the knowledge base...",
-    "Subducting your query...",
-    "Convecting through relevant chunks...",
-    "Cross-encoding the vibes...",
-    "Interrogating the source code...",
-    "Triangulating finite element wisdom...",
-    "Pressurising the PETSc solver...",
-    "Plume-ing through the docs...",
-    "Hypothetically speaking...",
-    "Sieving through indexed chunks...",
-    "Asking the mantle for answers...",
-    "Reranking tectonic possibilities...",
-]
+# --- Input & response ---
+chat_input = st.chat_input("Ask a question about Underworld3...")
+prompt = chat_input or _faq_trigger or _deep_trigger
+use_agent_plus = (_deep_trigger is not None) and (chat_input is None) and (_faq_trigger is None)
 
-# --- Input ---
-if prompt := st.chat_input("Ask a question about Underworld3..."):
+if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant", avatar="🦇"):
         citations = []
-        msg_cycle = _RETRIEVAL_MESSAGES.copy()
+        followups = []
+        endpoint = "/ask/agent-plus/stream" if use_agent_plus else "/ask/stream"
+        msg_cycle = (_DEEP_MESSAGES if use_agent_plus else _RETRIEVAL_MESSAGES).copy()
         random.shuffle(msg_cycle)
         msg_idx = [0]
         status_placeholder = st.empty()
@@ -88,7 +131,7 @@ if prompt := st.chat_input("Ask a question about Underworld3..."):
             first_text = True
             try:
                 with requests.post(
-                    f"{API_URL}/ask/stream",
+                    f"{API_URL}{endpoint}",
                     json={"question": prompt, "max_context_items": 10},
                     stream=True,
                     timeout=600,
@@ -113,8 +156,12 @@ if prompt := st.chat_input("Ask a question about Underworld3..."):
                                     status_placeholder.markdown(f"*{msg_cycle[msg_idx[0]]}*")
                                 elif event["type"] == "citations":
                                     citations.extend(event.get("citations", []))
+                                elif event["type"] == "followups":
+                                    followups.extend(event.get("questions", []))
                                 elif event["type"] == "error":
-                                    status_placeholder.empty()
+                                    if first_text:
+                                        status_placeholder.empty()
+                                    first_text = False
                                     yield event.get("text", "An error occurred.")
                             except json.JSONDecodeError:
                                 pass
@@ -132,8 +179,12 @@ if prompt := st.chat_input("Ask a question about Underworld3..."):
                 for c in citations:
                     st.markdown(f"- `{c}`")
 
+        if followups:
+            _render_followup_buttons(followups, key_prefix=f"new_{len(st.session_state.messages)}")
+
     st.session_state.messages.append({
         "role": "assistant",
         "content": answer,
         "citations": citations,
+        "followups": followups,
     })

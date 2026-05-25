@@ -1240,8 +1240,45 @@ def _stream_ask_agent_plus(q: Query):
     yield "data: [DONE]\n\n"
 
 
+def _generate_followups(question: str, answer: str) -> list:
+    """Generate 3 follow-up questions via Haiku: 2 standard + 1 deep (agent-plus)."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return []
+    try:
+        c = anthropic.Anthropic(api_key=api_key)
+        resp = c.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"A user asked about Underworld3:\nQ: {question}\n\n"
+                    f"Answer: {answer[:800]}\n\n"
+                    "Generate exactly 3 follow-up questions:\n"
+                    "- 2 natural follow-up questions the user might ask next\n"
+                    "- 1 precise question about exact source code values, defaults, or "
+                    "implementation details that requires reading the actual source code "
+                    "(mark this one with deep=true)\n\n"
+                    "Respond with JSON only, no markdown:\n"
+                    '{"questions": [{"text": "...", "deep": false}, '
+                    '{"text": "...", "deep": false}, {"text": "...", "deep": true}]}'
+                ),
+            }],
+        )
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        return json.loads(raw).get("questions", [])
+    except Exception as e:
+        print(f"[followups] generation failed: {e}")
+        return []
+
+
 def _stream_ask(q: Query):
-    """SSE generator for /ask/stream — yields text deltas then a citations event."""
+    """SSE generator for /ask/stream — yields text deltas, citations, and follow-up questions."""
     start_time = time.time()
     yield f"data: {json.dumps({'type': 'status'})}\n\n"
     ctx = retrieve(q.question, k=q.max_context_items, use_reranker=True,
@@ -1311,6 +1348,11 @@ def _stream_ask(q: Query):
     )
 
     yield f"data: {json.dumps({'type': 'citations', 'citations': citations, 'used_files': used_files})}\n\n"
+
+    followups = _generate_followups(q.question, full_text)
+    if followups:
+        yield f"data: {json.dumps({'type': 'followups', 'questions': followups})}\n\n"
+
     yield "data: [DONE]\n\n"
 
 
