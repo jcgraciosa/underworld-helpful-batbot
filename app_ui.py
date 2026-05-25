@@ -13,6 +13,15 @@ st.set_page_config(
     layout="centered",
 )
 
+_FAQ_QUESTIONS = [
+    "How do I install and set up Underworld3?",
+    "How do I create a mesh in Underworld3?",
+    "How do I set up and solve a Stokes flow problem?",
+    "How do I add boundary conditions?",
+    "What are SwarmVariables and how do I use them?",
+    "How do I visualise results with pyvista or VTK?",
+]
+
 _RETRIEVAL_MESSAGES = [
     "Rifting through the knowledge base...",
     "Subducting your query...",
@@ -64,6 +73,13 @@ with st.sidebar:
     if st.button("Clear chat"):
         st.session_state.messages = []
         st.rerun()
+
+    st.divider()
+    st.markdown("**Suggested questions**")
+    for faq_q in _FAQ_QUESTIONS:
+        if st.button(faq_q, use_container_width=True, key=f"faq_{faq_q[:30]}"):
+            st.session_state["faq_question"] = faq_q
+            st.rerun()
 
     st.caption(f"API: {API_URL}")
 
