@@ -1,6 +1,7 @@
 # filename: HelpfulBat_app.py
 import os
 import json
+import shutil
 import uvicorn
 from contextlib import asynccontextmanager
 from typing import List, Optional, Tuple
@@ -1359,7 +1360,12 @@ def recent_interactions(limit: int = 10):
 
 
 def _do_rebuild():
-    global index_built, _rebuild_status
+    global index_built, _rebuild_status, chroma_client, chroma_collection, embedder
+    cache_dir = os.environ.get("BOT_INDEX_CACHE", "./index_cache")
+    new_cache_dir = cache_dir + "_new"
+    backup_cache_dir = cache_dir + "_backup"
+    original_cache = cache_dir
+
     _rebuild_status = {"state": "running", "message": "Pulling latest UW3 repo...", "started_at": time.time()}
     repo_path = os.environ.get("BOT_REPO_PATH", "")
     try:
@@ -1368,14 +1374,43 @@ def _do_rebuild():
                 ["git", "-C", repo_path, "pull", "--ff-only", "origin", "main"],
                 capture_output=True, timeout=120,
             )
+
+        # Build into a fresh temp directory — live index untouched during build
+        shutil.rmtree(new_cache_dir, ignore_errors=True)
         _rebuild_status["message"] = "Rebuilding index..."
+        os.environ["BOT_INDEX_CACHE"] = new_cache_dir
         os.environ["BOT_FORCE_REBUILD"] = "1"
-        index_built = False
         ensure_index()
         os.environ.pop("BOT_FORCE_REBUILD", None)
+        os.environ["BOT_INDEX_CACHE"] = original_cache
+
+        # Swap new index into place
+        shutil.rmtree(backup_cache_dir, ignore_errors=True)
+        if os.path.exists(cache_dir):
+            os.rename(cache_dir, backup_cache_dir)
+        os.rename(new_cache_dir, cache_dir)
+
+        # Re-init globals to point at the renamed directory
+        chroma_client = chromadb.PersistentClient(path=cache_dir)
+        chroma_collection = chroma_client.get_or_create_collection(
+            name="docs", metadata={"hnsw:space": "cosine"}
+        )
+        index_built = True
         _rebuild_status = {"state": "done", "message": "Rebuild complete.", "started_at": _rebuild_status["started_at"]}
+
     except Exception as e:
         os.environ.pop("BOT_FORCE_REBUILD", None)
+        os.environ["BOT_INDEX_CACHE"] = original_cache
+        # Clean up failed build dir; restore globals to original live index
+        shutil.rmtree(new_cache_dir, ignore_errors=True)
+        try:
+            chroma_client = chromadb.PersistentClient(path=cache_dir)
+            chroma_collection = chroma_client.get_or_create_collection(
+                name="docs", metadata={"hnsw:space": "cosine"}
+            )
+            index_built = True
+        except Exception:
+            pass
         _rebuild_status = {"state": "error", "message": str(e), "started_at": _rebuild_status["started_at"]}
 
 
