@@ -1255,7 +1255,7 @@ def _generate_followups(question: str, answer: str) -> list:
                 "content": (
                     f"A user asked about Underworld3:\nQ: {question}\n\n"
                     f"Answer: {answer[:1500]}\n\n"
-                    "Generate exactly 3 short follow-up questions (max 12 words each) that "
+                    "Generate exactly 3 short follow-up questions (max 15 words each) that "
                     "are directly grounded in the specific functions, classes, parameters, "
                     "or concepts mentioned in the answer above. Do not generate generic "
                     "Underworld3 questions — each question must clearly reference something "
