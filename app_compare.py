@@ -9,6 +9,15 @@ from PIL import Image
 
 API_URL = os.environ.get("BOT_API_URL", "http://localhost:8001")
 
+_FAQ_QUESTIONS = [
+    "How do I install and set up Underworld3?",
+    "How do I create a mesh in Underworld3?",
+    "How do I set up and solve a Stokes flow problem?",
+    "How do I add boundary conditions?",
+    "What are SwarmVariables and how do I use them?",
+    "How do I visualise results with pyvista or VTK?",
+]
+
 _RETRIEVAL_MESSAGES = [
     "Rifting through the knowledge base...",
     "Subducting your query...",
@@ -68,6 +77,13 @@ with st.sidebar:
     if st.button("Clear chat"):
         st.session_state.messages = []
         st.rerun()
+
+    st.divider()
+    st.markdown("**Suggested questions**")
+    for faq_q in _FAQ_QUESTIONS:
+        if st.button(faq_q, use_container_width=True, key=f"faq_{faq_q[:30]}"):
+            st.session_state["faq_question"] = faq_q
+            st.rerun()
 
     st.caption(f"API: {API_URL}")
 
@@ -140,7 +156,12 @@ for msg in st.session_state.messages:
         with st.chat_message("assistant", avatar="🦇"):
             _render_stored(msg)
 
-if prompt := st.chat_input("Ask a question about Underworld3..."):
+_faq_trigger = None
+if "faq_question" in st.session_state:
+    _faq_trigger = st.session_state["faq_question"]
+    del st.session_state["faq_question"]
+
+if prompt := (st.chat_input("Ask a question about Underworld3...") or _faq_trigger):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)

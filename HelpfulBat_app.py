@@ -1019,6 +1019,226 @@ def _stream_ask_agent(q: Query):
     yield "data: [DONE]\n\n"
 
 
+# ---------------------------------------------------------------------------
+# Config 9 — RAG + read_file ("middle ground") agent
+# ---------------------------------------------------------------------------
+
+_READ_FILE_TOOL = {
+    "name": "read_file",
+    "description": (
+        "Read a source file from the Underworld3 repository. "
+        "Use this after search_docs to get the exact content of a file when you need precise "
+        "parameter values, default arguments, or implementation details not fully visible in the "
+        "retrieved chunks. Prefer specifying a line range around the relevant code."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "File path relative to the repo root (e.g. 'src/underworld3/systems/solvers.py')",
+            },
+            "start_line": {
+                "type": "integer",
+                "description": "First line to read, 1-indexed (optional). Defaults to 1.",
+            },
+            "end_line": {
+                "type": "integer",
+                "description": "Last line to read, 1-indexed (optional). Defaults to start_line+199, or line 300 if start_line not given.",
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+
+def _read_repo_file(path: str, start_line: int | None, end_line: int | None) -> tuple[str, int, int]:
+    """Read a file from the repo within a line range. Returns (numbered_content, start, end)."""
+    repo_path = os.environ.get("BOT_REPO_PATH", "")
+    if not repo_path:
+        raise ValueError("BOT_REPO_PATH not set")
+    full_path = (Path(repo_path) / path).resolve()
+    # Guard against path traversal — append sep so /repo_evil/ can't pass
+    repo_resolved = str(Path(repo_path).resolve()) + os.sep
+    if not str(full_path).startswith(repo_resolved):
+        raise ValueError(f"Path outside repo: {path}")
+    if not full_path.exists():
+        raise FileNotFoundError(f"File not found in repo: {path}")
+    lines = full_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    total = len(lines)
+    s = max(1, start_line or 1)
+    e = min(total, end_line if end_line else s + (199 if start_line else 299))
+    content = "\n".join(f"{s + i}: {line}" for i, line in enumerate(lines[s - 1:e]))
+    return content, s, e
+
+
+def _agent_collect_chunks_plus(
+    question: str, k: int,
+    use_reranker: bool, n_candidates: int,
+    use_hybrid: bool, use_hyde: bool,
+    max_calls: int = 6,
+) -> List[IndexedDoc]:
+    """Agent loop with search_docs + read_file tools. Returns aggregated chunks and file reads."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return []
+
+    client = anthropic.Anthropic(api_key=api_key)
+    messages = [{"role": "user", "content": (
+        f"Question: {question}\n\n"
+        "Use search_docs to find relevant chunks and identify which files contain the answer. "
+        "Then use read_file on specific files or line ranges for exact values and implementation details."
+    )}]
+    all_chunks: List[IndexedDoc] = []
+    seen_ids: set = set()
+    call_count = 0
+    search_count = 0
+    file_read_count = 0
+    file_doc_id = -1
+    stop_reason = "max_calls reached"
+
+    while call_count < max_calls:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1024,
+            temperature=0.0,
+            system=(
+                "You are a search assistant for the Underworld3 codebase. "
+                "Use search_docs first to find relevant chunks and identify file paths. "
+                "Use read_file to read specific files or line ranges when you need exact values. "
+                "Stop when you have enough context to answer accurately."
+            ),
+            tools=[_SEARCH_DOCS_TOOL, _READ_FILE_TOOL],
+            messages=messages,
+        )
+        messages.append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason != "tool_use":
+            stop_reason = "Claude decided to stop"
+            break
+
+        tool_results = []
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
+            call_count += 1
+
+            if block.name == "search_docs":
+                search_count += 1
+                query = block.input.get("query", question)
+                result_k = min(int(block.input.get("k", 5)), k)
+                chunks = retrieve(
+                    query, k=result_k, use_reranker=use_reranker,
+                    n_candidates=n_candidates, use_hybrid=use_hybrid, use_hyde=use_hyde,
+                )
+                print(f"  [agent+] call {call_count}: search_docs query='{query}' → {len(chunks)} chunks")
+                for ch in chunks:
+                    if ch.doc_id not in seen_ids:
+                        seen_ids.add(ch.doc_id)
+                        all_chunks.append(ch)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": format_context(chunks) if chunks else "No results found.",
+                })
+
+            elif block.name == "read_file":
+                file_read_count += 1
+                path = block.input.get("path", "")
+                start_line = block.input.get("start_line")
+                end_line = block.input.get("end_line")
+                try:
+                    content, s, e = _read_repo_file(path, start_line, end_line)
+                    print(f"  [agent+] call {call_count}: read_file '{path}' lines {s}-{e}")
+                    file_doc = IndexedDoc(doc_id=file_doc_id, path=path, start_line=s, end_line=e, text=content)
+                    file_doc_id -= 1
+                    seen_ids.add(file_doc.doc_id)
+                    all_chunks.append(file_doc)
+                    tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
+                except Exception as ex:
+                    print(f"  [agent+] call {call_count}: read_file error: {ex}")
+                    tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": f"Error: {ex}"})
+
+        messages.append({"role": "user", "content": tool_results})
+
+    print(f"  [agent+] done: {call_count} calls ({search_count} search, {file_read_count} file reads), "
+          f"{len(all_chunks)} chunks, stopped: {stop_reason}")
+    return all_chunks
+
+
+def _stream_ask_agent_plus(q: Query):
+    """SSE generator for /ask/agent-plus/stream — RAG + read_file middle-ground agent."""
+    start_time = time.time()
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        yield f"data: {json.dumps({'type': 'error', 'text': 'ANTHROPIC_API_KEY not set.'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    yield f"data: {json.dumps({'type': 'status'})}\n\n"
+    all_chunks = _agent_collect_chunks_plus(
+        q.question, k=q.max_context_items,
+        use_reranker=True, n_candidates=10,
+        use_hybrid=USE_HYBRID_SEARCH, use_hyde=USE_HYDE,
+        max_calls=6,
+    )
+    yield f"data: {json.dumps({'type': 'status'})}\n\n"
+    yield f"data: {json.dumps({'type': 'context', 'chunks': [{'text': ch.text, 'path': ch.path, 'doc_id': ch.doc_id} for ch in all_chunks]})}\n\n"
+
+    system_prompt = build_system_prompt()
+    context_text = format_context(all_chunks)
+    user_prompt = (
+        f"Question: {q.question}\n\n"
+        "Be concise — answer directly and completely, but avoid unnecessary explanation. "
+        "Include code examples only when they add clarity. "
+        "Include citations to specific files and line ranges."
+    )
+
+    client = anthropic.Anthropic(api_key=api_key)
+    full_text = ""
+    try:
+        with client.messages.stream(
+            model=CLAUDE_MODEL,
+            max_tokens=4096,
+            temperature=0.2,
+            system=[
+                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": f"Repository context:\n\n{context_text}", "cache_control": {"type": "ephemeral"}},
+            ],
+            messages=[{"role": "user", "content": user_prompt}],
+            extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
+        ) as stream:
+            for text in stream.text_stream:
+                full_text += text
+                yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
+    except anthropic.APIError as e:
+        yield f"data: {json.dumps({'type': 'error', 'text': f'Claude API error: {e}'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    seen_paths: set = set()
+    citations: list = []
+    used_files: list = []
+    for d in all_chunks:
+        if d.path in full_text and d.path not in seen_paths:
+            seen_paths.add(d.path)
+            citations.append(linkify(d.path, d.start_line, d.end_line))
+            used_files.append(d.path)
+
+    response_time_ms = int((time.time() - start_time) * 1000)
+    docs_used = [{"file": f, "doc_id": i, "score": None} for i, f in enumerate(used_files)]
+    interaction_logger.log_interaction(
+        question=q.question, answer=full_text, docs_used=docs_used,
+        confidence=0.8 if citations else 0.5,
+        response_time_ms=response_time_ms, channel="api",
+        metadata={"citations": citations, "mode": "agent-plus"},
+    )
+
+    yield f"data: {json.dumps({'type': 'citations', 'citations': citations, 'used_files': used_files})}\n\n"
+    yield "data: [DONE]\n\n"
+
+
 def _stream_ask(q: Query):
     """SSE generator for /ask/stream — yields text deltas then a citations event."""
     start_time = time.time()
@@ -1101,6 +1321,11 @@ def ask_stream(q: Query):
 @app.post("/ask/agent/stream")
 def ask_agent_stream(q: Query):
     return StreamingResponse(_stream_ask_agent(q), media_type="text/event-stream")
+
+
+@app.post("/ask/agent-plus/stream")
+def ask_agent_plus_stream(q: Query):
+    return StreamingResponse(_stream_ask_agent_plus(q), media_type="text/event-stream")
 
 
 @app.get("/health")

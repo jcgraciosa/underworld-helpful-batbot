@@ -50,6 +50,7 @@ from HelpfulBat_app import (
     ensure_index,
     retrieve,
     _agent_collect_chunks,
+    _agent_collect_chunks_plus,
     call_llm_with_caching,
     build_system_prompt,
     format_context,
@@ -112,7 +113,7 @@ def build_ragas_embeddings():
         return None
 
 
-def run_eval(questions_path: str, output_path: str | None, k: int = 6, use_reranker: bool = False, n_candidates: int = 20, use_hybrid: bool = False, use_hyde: bool = False, no_rag: bool = False, use_agent: bool = False):
+def run_eval(questions_path: str, output_path: str | None, k: int = 6, use_reranker: bool = False, n_candidates: int = 20, use_hybrid: bool = False, use_hyde: bool = False, no_rag: bool = False, use_agent: bool = False, use_agent_plus: bool = False):
     if not no_rag:
         print("Initialising index...")
         ensure_index()
@@ -141,6 +142,9 @@ def run_eval(questions_path: str, output_path: str | None, k: int = 6, use_reran
             context_text = ""
         elif use_agent:
             ctx_docs = _agent_collect_chunks(q, k=k, use_reranker=use_reranker, n_candidates=n_candidates, use_hybrid=use_hybrid, use_hyde=use_hyde)
+            context_text = format_context(ctx_docs)
+        elif use_agent_plus:
+            ctx_docs = _agent_collect_chunks_plus(q, k=k, use_reranker=use_reranker, n_candidates=n_candidates, use_hybrid=use_hybrid, use_hyde=use_hyde)
             context_text = format_context(ctx_docs)
         else:
             ctx_docs = retrieve(q, k=k, use_reranker=use_reranker, n_candidates=n_candidates, use_hybrid=use_hybrid, use_hyde=use_hyde)
@@ -284,13 +288,23 @@ if __name__ == "__main__":
         help="Use tool-use agent RAG — Claude issues multiple search_docs calls to collect chunks, "
              "then generates the answer from all collected context.",
     )
+    parser.add_argument(
+        "--agent-plus",
+        action="store_true",
+        dest="use_agent_plus",
+        help="Use middle-ground agent RAG — Claude issues search_docs and read_file calls, "
+             "reading specific repo files for exact values after initial retrieval.",
+    )
     args = parser.parse_args()
 
     if args.no_rag:
         print("Mode: plain Claude (no RAG) — retrieval skipped")
+    elif args.use_agent_plus:
+        print("Mode: agent-plus RAG (search_docs + read_file) — middle-ground agent")
+        print(f"HyDE: {'ON' if args.hyde else 'OFF'}, max tool calls: 6")
     elif args.use_agent:
         print("Mode: agent RAG (tool-use) — Claude decides when/how to search")
-        print(f"HyDE: {'ON' if args.hyde else 'OFF'}, max tool calls: 4")
+        print(f"HyDE: {'ON' if args.hyde else 'OFF'}, max tool calls: 6")
     else:
         if args.reranker:
             print(f"Reranker: ON (fetching {args.n_candidates} candidates, reranking to top {args.k})")
@@ -299,4 +313,4 @@ if __name__ == "__main__":
         print(f"Hybrid BM25+vector: {'ON' if args.hybrid else 'OFF'}")
         print(f"HyDE: {'ON' if args.hyde else 'OFF'}")
 
-    run_eval(args.questions, args.output, k=args.k, use_reranker=args.reranker, n_candidates=args.n_candidates, use_hybrid=args.hybrid, use_hyde=args.hyde, no_rag=args.no_rag, use_agent=args.use_agent)
+    run_eval(args.questions, args.output, k=args.k, use_reranker=args.reranker, n_candidates=args.n_candidates, use_hybrid=args.hybrid, use_hyde=args.hyde, no_rag=args.no_rag, use_agent=args.use_agent, use_agent_plus=args.use_agent_plus)
