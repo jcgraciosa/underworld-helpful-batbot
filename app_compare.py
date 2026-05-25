@@ -49,7 +49,7 @@ with st.sidebar:
     logo_path = os.path.join(os.path.dirname(__file__), "assets", "uw3_logo.png")
     st.image(Image.open(logo_path), use_container_width=True)
     st.title("HelpfulBatBot 🦇")
-    st.markdown("**Comparison mode** — Standard RAG vs Agent RAG")
+    st.markdown("**Comparison mode** — Standard RAG vs Agent-plus RAG")
     st.divider()
 
     try:
@@ -67,10 +67,10 @@ with st.sidebar:
         "**Standard RAG** — single retrieval pass\n"
         "- Fast (~5–10 s)\n"
         "- Fixed k=10 chunks retrieved once\n\n"
-        "**🦇 Agent RAG** — multi-step search\n"
-        "- Slower (~20–30 s)\n"
-        "- Claude decides how many times to search\n"
-        "- Better on complex or multi-hop questions"
+        "**🦇 Agent-plus RAG** — multi-step search + file reads\n"
+        "- Slower (~20–40 s)\n"
+        "- Claude searches then reads exact source lines\n"
+        "- Best for precise defaults and parameter values"
     )
     st.divider()
 
@@ -93,7 +93,7 @@ def _collect_agent(question, result):
     start = time.time()
     try:
         with requests.post(
-            f"{API_URL}/ask/agent/stream",
+            f"{API_URL}/ask/agent-plus/stream",
             json={"question": question, "max_context_items": 10},
             stream=True,
             timeout=600,
@@ -136,7 +136,7 @@ def _render_stored(msg):
                 for c in msg["rag_citations"]:
                     st.markdown(f"- `{c}`")
     with col2:
-        st.markdown("**🦇 Agent RAG**")
+        st.markdown("**🦇 Agent-plus RAG**")
         st.markdown(msg["agent_answer"])
         st.caption(f"⏱ {msg['agent_elapsed']:.1f}s")
         if msg.get("agent_citations"):
@@ -245,9 +245,9 @@ if prompt := (st.chat_input("Ask a question about Underworld3...") or _faq_trigg
 
         # Right column: wait for agent (it has been running in parallel), then display
         with col2:
-            st.markdown("**🦇 Agent RAG**")
+            st.markdown("**🦇 Agent-plus RAG**")
             if not agent_result["done"]:
-                with st.spinner("Agent still searching…"):
+                with st.spinner("Agent-plus still searching…"):
                     agent_thread.join(timeout=300)
 
             agent_elapsed = agent_result.get("elapsed") or (time.time() - agent_start)
