@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import time
 import requests
 import streamlit as st
 from PIL import Image
@@ -188,7 +189,9 @@ if prompt:
                 status_placeholder.empty()
                 yield f"Error contacting the backend: {e}"
 
+        t_start = time.time()
         answer = st.write_stream(stream_response())
+        st.caption(f"⏱ {time.time() - t_start:.1f}s")
 
         if citations:
             with st.expander("Sources"):
