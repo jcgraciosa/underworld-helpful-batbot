@@ -1254,11 +1254,14 @@ def _generate_followups(question: str, answer: str) -> list:
                 "role": "user",
                 "content": (
                     f"A user asked about Underworld3:\nQ: {question}\n\n"
-                    f"Answer: {answer[:800]}\n\n"
-                    "Generate exactly 3 follow-up questions:\n"
+                    f"Answer: {answer[:1500]}\n\n"
+                    "Generate exactly 3 follow-up questions that are directly grounded in "
+                    "the specific functions, classes, parameters, or concepts mentioned in "
+                    "the answer above. Do not generate generic Underworld3 questions — each "
+                    "question must clearly reference something from this specific answer.\n\n"
                     "- 2 natural follow-up questions the user might ask next\n"
-                    "- 1 precise question about exact source code values, defaults, or "
-                    "implementation details that requires reading the actual source code "
+                    "- 1 precise question asking for an exact value, default, or "
+                    "implementation detail visible only in the source code "
                     "(mark this one with deep=true)\n\n"
                     "Respond with JSON only, no markdown:\n"
                     '{"questions": [{"text": "...", "deep": false}, '
