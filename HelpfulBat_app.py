@@ -2,11 +2,13 @@
 import os
 import json
 import shutil
+import collections
+import threading
 import uvicorn
 from contextlib import asynccontextmanager
 from typing import List, Optional, Tuple
 import subprocess
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path, PurePosixPath
@@ -83,6 +85,25 @@ _bm25_index = None  # BM25Okapi index, built at index time
 _bm25_doc_ids: List[str] = []  # ChromaDB doc IDs in BM25 corpus order
 _index_lock = __import__("threading").Lock()  # Prevents duplicate ensure_index() runs
 _rebuild_status: dict = {"state": "idle", "message": "", "started_at": None}
+
+# Rate limiter — sliding window per IP
+_RATE_LIMIT_MAX = int(os.environ.get("RATE_LIMIT_MAX", 20))
+_RATE_LIMIT_WINDOW = int(os.environ.get("RATE_LIMIT_WINDOW", 3600))
+_rate_counters: dict = {}
+_rate_lock = threading.Lock()
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Return True if request is allowed, False if rate limit exceeded."""
+    now = time.time()
+    with _rate_lock:
+        dq = _rate_counters.setdefault(ip, collections.deque())
+        while dq and dq[0] < now - _RATE_LIMIT_WINDOW:
+            dq.popleft()
+        if len(dq) >= _RATE_LIMIT_MAX:
+            return False
+        dq.append(now)
+        return True
 
 
 def allowed_exts() -> set:
@@ -1361,7 +1382,9 @@ def _stream_ask(q: Query):
 
 
 @app.post("/ask/stream")
-def ask_stream(q: Query):
+def ask_stream(q: Query, request: Request):
+    if not _check_rate_limit(request.client.host):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please try again later.")
     return StreamingResponse(_stream_ask(q), media_type="text/event-stream")
 
 
@@ -1371,7 +1394,9 @@ def ask_agent_stream(q: Query):
 
 
 @app.post("/ask/agent-plus/stream")
-def ask_agent_plus_stream(q: Query):
+def ask_agent_plus_stream(q: Query, request: Request):
+    if not _check_rate_limit(request.client.host):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please try again later.")
     return StreamingResponse(_stream_ask_agent_plus(q), media_type="text/event-stream")
 
 
@@ -1403,6 +1428,17 @@ def question_patterns():
 def recent_interactions(limit: int = 10):
     """Get recent interactions for review."""
     return interaction_logger.get_interactions(limit=limit)
+
+
+@app.get("/interactions/questions")
+def get_recent_questions(n: int = 100, x_rebuild_token: str = Header(None)):
+    """Return recent questions only (token-protected) — for FAQ curation."""
+    expected = os.environ.get("REBUILD_TOKEN", "")
+    if not expected or x_rebuild_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    records = interaction_logger.get_interactions(limit=n)
+    questions = [{"timestamp": r.get("timestamp"), "question": r.get("question")} for r in records]
+    return {"count": len(questions), "questions": questions}
 
 
 def _do_rebuild():

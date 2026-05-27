@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import re
 import time
 import requests
 import streamlit as st
@@ -125,9 +126,22 @@ for i, msg in enumerate(st.session_state.messages):
             _render_followup_buttons(msg["followups"], key_prefix=f"hist_{i}")
 
 # --- Input & response ---
+_AGENT_PLUS_PHRASES = ("use agent plus", "agent plus", "ask the manager")
+
 chat_input = st.chat_input("Ask a question about Underworld3...")
+_agent_plus_from_phrase = False
+if chat_input:
+    for _phrase in _AGENT_PLUS_PHRASES:
+        if _phrase in chat_input.lower():
+            chat_input = re.sub(_phrase, "", chat_input, flags=re.IGNORECASE).strip(" ,?")
+            _agent_plus_from_phrase = True
+            break
+
 prompt = chat_input or _faq_trigger or _deep_trigger
-use_agent_plus = (_deep_trigger is not None) and (chat_input is None) and (_faq_trigger is None)
+use_agent_plus = (
+    (_deep_trigger is not None and chat_input is None and _faq_trigger is None)
+    or _agent_plus_from_phrase
+)
 
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -185,6 +199,12 @@ if prompt:
             except requests.exceptions.Timeout:
                 status_placeholder.empty()
                 yield "The request timed out. Please try again in a moment."
+            except requests.exceptions.HTTPError as e:
+                status_placeholder.empty()
+                if e.response is not None and e.response.status_code == 429:
+                    yield "Rate limit reached — please wait a moment before asking again."
+                else:
+                    yield f"Error contacting the backend: {e}"
             except Exception as e:
                 status_placeholder.empty()
                 yield f"Error contacting the backend: {e}"
